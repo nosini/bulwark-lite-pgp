@@ -15,7 +15,9 @@ permissions:
 
 concurrency:
   group: checks-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Only the latest commit of a branch needs checking. Each release tag has its
+  # own group.
+  cancel-in-progress: true
 
 jobs:
   workflows:
@@ -37,9 +39,9 @@ jobs:
           bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12 "$RUNNER_TEMP"
           "$RUNNER_TEMP/actionlint" -color
 
-  webmail:
+  lint:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 20
     defaults:
       run:
         shell: bash
@@ -62,9 +64,36 @@ jobs:
 
       - run: npm run typecheck
 
-      - run: npm test -- --pool=forks --maxWorkers=2 --testTimeout=15000
-
       - run: npm run lint
+
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: upstream/webmail/package-lock.json
+
+      - run: npm run install:webmail
+
+      # Upstream's settings: more workers per runner make its load-sensitive
+      # component tests time out, so the suite is split across runners instead.
+      - name: Test (shard ${{ matrix.shard }}/4)
+        run: npm test -- --pool=forks --maxWorkers=2 --testTimeout=15000 --shard=${{ matrix.shard }}/4
 
   build:
     runs-on: ubuntu-24.04
