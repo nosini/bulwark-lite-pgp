@@ -1,0 +1,3 @@
+[submodule "upstream/webmail"]
+	path = upstream/webmail
+	url = https://github.com/bulwarkmail/webmail.git

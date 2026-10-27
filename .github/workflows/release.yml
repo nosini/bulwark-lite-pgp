@@ -1,0 +1,137 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
+
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [static, stalwart]
+    defaults:
+      run:
+        shell: bash
+    env:
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: upstream/webmail/package-lock.json
+
+      - name: Install dependencies
+        run: npm run install:webmail
+
+      - name: Build Bulwark Lite (${{ matrix.target }})
+        env:
+          GIT_COMMIT: ${{ github.sha }}
+          LITE_TARGET: ${{ matrix.target }}
+          # Shown in the About dialog, so users can find the source (AGPL).
+          LITE_SOURCE_CODE_URL: ${{ github.server_url }}/${{ github.repository }}/tree/${{ github.ref_name }}
+          # Used for the download URLs in the Stalwart bundle's README.
+          LITE_RELEASE_REPOSITORY: ${{ github.repository }}
+          LITE_RELEASE_TAG: ${{ github.ref_name }}
+        run: WEBMAIL_VERSION="${TAG#v}" npm run build:lite
+
+      - name: Package the zip
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir dist
+          if [[ "$TARGET" == stalwart ]]; then
+            # postbuild packed it. The name has no version, so Stalwart can
+            # follow releases/latest/download/bulwark-lite-stalwart.zip.
+            cp build/webmail/bulwark-lite-stalwart.zip dist/
+          else
+            (cd build/webmail/out && zip -qr "$GITHUB_WORKSPACE/dist/bulwark-lite-${TAG#v}.zip" .)
+          fi
+          ls -l dist
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bulwark-lite-${{ matrix.target }}
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  # The only job with a write token, and it runs no checked-out code.
+  release:
+    needs: [checks, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ github.ref_name }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: bulwark-lite-*
+          path: zips
+          merge-multiple: true
+
+      - name: Checksum the zips
+        working-directory: zips
+        run: for zip in *.zip; do sha256sum "$zip" > "$zip.sha256"; done
+
+      - uses: actions/attest@v4
+        with:
+          subject-path: zips/*.zip
+
+      # Numeric packaging revisions (v1.18.0-1) are stable and become the
+      # latest release; other suffixes are prereleases.
+      - name: Create the release and upload the zips
+        run: |
+          shopt -s nullglob
+          assets=(zips/*.zip zips/*.zip.sha256)
+          if (( ${#assets[@]} != 4 )); then
+            echo "Expected two zips and their checksums, got: ${assets[*]}" >&2
+            exit 1
+          fi
+          stable=false
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9]+)?$ ]]; then
+            stable=true
+          fi
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            if [[ "$stable" != true ]]; then
+              gh release edit "$TAG" --prerelease --latest=false
+            fi
+            gh release upload "$TAG" "${assets[@]}" --clobber
+            # Finish a draft left by an interrupted release creation too.
+            gh release edit "$TAG" --draft=false
+          else
+            options=(--verify-tag --title "Bulwark Lite PGP ${TAG#v}" --generate-notes)
+            if [[ "$stable" == true ]]; then
+              # Explicit, as GitHub's semver ordering puts v1.18.0-1 before v1.18.0.
+              options+=(--latest)
+            else
+              options+=(--prerelease --latest=false)
+            fi
+            gh release create "$TAG" "${assets[@]}" "${options[@]}"
+          fi

@@ -1,0 +1,43 @@
+name: Update
+
+# Needs the repository setting "Allow GitHub Actions to create and approve
+# pull requests".
+on:
+  schedule:
+    - cron: '23 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: update
+
+jobs:
+  upstream:
+    runs-on: ubuntu-24.04
+    permissions:
+      # Push the update branch, open its pull request and start its checks.
+      contents: write
+      pull-requests: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRANCH: update/upstream
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The whole history, to tell the bot's commits on the update branch
+          # from changes made by people.
+          fetch-depth: 0
+          submodules: true
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+
+      - name: Propose upstream's latest release
+        run: bash scripts/update-upstream.sh

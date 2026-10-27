@@ -1,0 +1,97 @@
+name: Checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # The update workflow dispatches this for its branch: pushes made with
+  # GITHUB_TOKEN don't start workflows.
+  workflow_dispatch:
+  # The release workflow runs these before publishing.
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  workflows:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Lint shell scripts
+        run: shellcheck scripts/*.sh
+
+      # actionlint also runs shellcheck on each workflow's run steps.
+      - name: Lint workflows
+        run: |
+          bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12 "$RUNNER_TEMP"
+          "$RUNNER_TEMP/actionlint" -color
+
+  webmail:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          # The patches leave upstream's dependencies alone.
+          cache-dependency-path: upstream/webmail/package-lock.json
+
+      # Applies the patches, overlays src/ and merges locales/, failing when
+      # upstream has changed underneath them.
+      - run: npm run install:webmail
+
+      - run: npm run typecheck
+
+      - run: npm test -- --pool=forks --maxWorkers=2 --testTimeout=15000
+
+      - run: npm run lint
+
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [static, stalwart]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: upstream/webmail/package-lock.json
+
+      - run: npm run install:webmail
+
+      - name: Build Bulwark Lite (${{ matrix.target }})
+        env:
+          GIT_COMMIT: ${{ github.sha }}
+          LITE_TARGET: ${{ matrix.target }}
+        run: npm run build:lite
