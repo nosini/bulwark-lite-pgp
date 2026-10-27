@@ -1,5 +1,5 @@
 diff --git a/components/email/email-composer.tsx b/components/email/email-composer.tsx
-index 81495cf5..0b02bdc3 100644
+index 81495cf5..f1e6b929 100644
 --- a/components/email/email-composer.tsx
 +++ b/components/email/email-composer.tsx
 @@ -46,6 +46,11 @@ import { cn, formatFileSize, formatDateTime, generateUUID } from "@/lib/utils";
@@ -234,14 +234,26 @@ index 81495cf5..0b02bdc3 100644
      if (typeof value !== 'string' || value.length === 0 || value.length > MAX_PLUGIN_INSERT_LENGTH) return false;
      if (plainTextModeRef.current) {
        const textarea = bodyRef.current;
-@@ -2748,6 +2857,7 @@ export function EmailComposer({
+@@ -2746,8 +2855,9 @@ export function EmailComposer({
+     const html = value.split(/\r?\n\r?\n/).map((para) => `<p>${escapeHtml(para).replace(/\r?\n/g, '<br>')}</p>`).join('');
+     editor.chain().focus().insertContent(html).run();
      return true;
-   }, []);
+-  }, []);
++  }, [pgpActiveRef]);
    const pluginSelectedText = useCallback(() => {
 +    if (pgpActiveRef.current) return '';
      if (plainTextModeRef.current) {
        const textarea = bodyRef.current;
        if (!textarea) return '';
+@@ -2757,7 +2867,7 @@ export function EmailComposer({
+     if (!editor) return '';
+     const { from, to } = editor.state.selection;
+     return editor.state.doc.textBetween(from, to, '\n\n');
+-  }, []);
++  }, [pgpActiveRef]);
+   // Plugins read and change this message through api.composer, with the id
+   // this composer hands out in its action clicks and slot props (see
+   // composer-registry.ts). The rich editor is changed only through its own
 @@ -2773,7 +2883,7 @@ export function EmailComposer({
    pluginAttachRef.current = handlePluginAttachmentAdd;
    useEffect(() => {
@@ -251,7 +263,7 @@ index 81495cf5..0b02bdc3 100644
        readBody: () => {
          if (plainTextModeRef.current) {
            const value = bodyRef.current?.value ?? '';
-@@ -2817,7 +2927,7 @@ export function EmailComposer({
+@@ -2817,10 +2927,10 @@ export function EmailComposer({
          return !!editor && replaceEditorSelection(editor, html, { below });
        },
        attach: (file) => pluginAttachRef.current(file as PluginAttachmentUpload),
@@ -259,7 +271,11 @@ index 81495cf5..0b02bdc3 100644
 +    }));
      setPluginComposerId(id);
      return unregister;
-   }, []);
+-  }, []);
++  }, [pgpActiveRef]);
+ 
+   // The selected text of the message, for the plugin frames around it and
+   // the panels beside it (an assistant works on what the user highlights).
 @@ -2957,7 +3067,7 @@ export function EmailComposer({
        // tracked via inflightSaveRef.
        saveTimeoutRef.current = null;
@@ -575,7 +591,7 @@ index 54a8409d..49e2e6c2 100644
                <iframe
                  ref={iframeRef}
 diff --git a/components/mail/mail-app.tsx b/components/mail/mail-app.tsx
-index bbd5971b..7c9213d6 100644
+index bbd5971b..23c99acb 100644
 --- a/components/mail/mail-app.tsx
 +++ b/components/mail/mail-app.tsx
 @@ -88,7 +88,7 @@ import { isFilterEmpty, activeFilterCount, DEFAULT_SEARCH_FILTERS } from "@/lib/
@@ -617,7 +633,27 @@ index bbd5971b..7c9213d6 100644
                }
                if (isScheduledView) await fetchScheduledEmails(client);
              } catch (error) {
-@@ -4309,6 +4316,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+@@ -4064,7 +4071,9 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+   };
+ 
+   useEffect(() => {
+-    ++mvConversationOpenSeqRef.current;
++    // A counter, not a DOM node: the cleanup must bump its current value.
++    const openSeq = mvConversationOpenSeqRef;
++    ++openSeq.current;
+     if (!mvConversationThreadId || !client || !mvConversationRef) {
+       setMvConversationResult(null);
+       setMvConversationLoading(null);
+@@ -4080,7 +4089,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+       } : null);
+       setMvConversationLoading(null);
+     });
+-    return () => { cancelled = true; ++mvConversationOpenSeqRef.current; };
++    return () => { cancelled = true; ++openSeq.current; };
+     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the open message, not on every list refresh
+   }, [mvConversationThreadId, mvConversationRef?.id, mvBlobSource.client, mvBlobSource.accountId, client]);
+ 
+@@ -4309,6 +4318,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
            fullEmail.scheduledAccountId = listEmail.scheduledAccountId;
            fullEmail.isScheduled = true;
            fullEmail.isSmimeScheduled = listEmail.isSmimeScheduled;
@@ -625,7 +661,7 @@ index bbd5971b..7c9213d6 100644
          }
          // Re-stamp the source reference so later actions on the open email
          // resolve to the right account (the fetched object lacks these).
-@@ -4509,6 +4517,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+@@ -4509,6 +4519,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
        }}
      >
        <EmailComposer
@@ -633,7 +669,7 @@ index bbd5971b..7c9213d6 100644
          key={composerSessionId}
          mode={pendingDraft?.mode ?? composerMode}
          composeFromAccountEmail={resolveComposeAccountEmail(
-@@ -5149,7 +5158,9 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+@@ -5149,7 +5160,9 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
                    // The context menu does not wait for this; report here.
                    const restored = await cancelScheduledForEdit(email);
                    if (restored === undefined) return;
@@ -644,7 +680,7 @@ index bbd5971b..7c9213d6 100644
                      setComposerMode('compose');
                      setPendingDraft(null);
                    } else if (restored) {
-@@ -5478,7 +5489,9 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+@@ -5478,7 +5491,9 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
                        // The button does not wait for this; report here.
                        const restored = await cancelScheduledForEdit(selectedEmail);
                        if (restored === undefined) return;
