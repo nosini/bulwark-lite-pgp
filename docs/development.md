@@ -66,6 +66,23 @@ New files belong in `src/`, not in a patch, and new locale keys belong in
 Upstream locale files mostly use CRLF line endings. The merge writes back each
 file's dominant line ending.
 
+## Checking a mail server
+
+The PGP composer sends through `Blob/upload`, `Email/import` and
+`EmailSubmission/set` rather than `Email/set`, because the JMAP body structure
+can't express the `protocol` parameter of `multipart/encrypted`.
+`wire-check.mjs` sends a PGP/MIME test message (with a dummy payload, so no keys
+or Mailvelope are needed) the same way. It then reads back the stored copy, and
+the delivered one if you give it a second account, and fails if the server
+changed the message structure or leaked a Bcc:
+
+```bash
+node scripts/run.mjs node scripts/mailvelope/wire-check.mjs \
+  --server https://mail.example.com \
+  --user alice@example.com --password '...' \
+  --to bob@example.com --to-user bob@example.com --to-password '...' --cleanup
+```
+
 ## Updating upstream
 
 Every Monday the **Update** workflow moves the submodule to upstream's latest

@@ -6,8 +6,8 @@ You can read PGP/MIME and inline PGP mail, and send encrypted (and signed)
 PGP/MIME mail. Keys, passphrases and decrypted text stay inside the extension.
 The webmail page never sees them, and the server only receives ciphertext.
 
-Each release is an upstream Bulwark release with these changes applied. Release
-`v1.18.0-1` is the first build of upstream 1.18.0. Without Mailvelope, or before
+Each release is an upstream Bulwark release with these changes applied, named
+after it: `v1.18.0-1` is built from upstream 1.18.0. Without Mailvelope, or before
 you allow this site in it, the webmail works like upstream Bulwark Lite.
 
 ## Install on Stalwart
@@ -73,9 +73,8 @@ When you send encrypted mail:
 - Send is blocked while a recipient has no key. The webmail never falls back
   to sending unencrypted.
 
-[docs/mailvelope-pgp.md](docs/mailvelope-pgp.md) explains how it works and its
-limits, and includes a script that checks your server delivers PGP/MIME
-unchanged.
+[docs/mailvelope-pgp.md](docs/mailvelope-pgp.md) covers using it in more
+detail, and its limitations.
 
 ## Development
 
