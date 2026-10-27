@@ -1,0 +1,237 @@
+diff --git a/lib/__tests__/jmap-client-extensions.test.ts b/lib/__tests__/jmap-client-extensions.test.ts
+index d4bf0e0b..561f5016 100644
+--- a/lib/__tests__/jmap-client-extensions.test.ts
++++ b/lib/__tests__/jmap-client-extensions.test.ts
+@@ -82,6 +82,27 @@ describe('JMAP client extensions', () => {
+     vi.restoreAllMocks();
+   });
+ 
++  it.each([true, false])('raw send preserves REQUIRETLS=%s and Bcc envelope recipients', async (requireTls) => {
++    await setup();
++    vi.spyOn(client, 'uploadBlob').mockResolvedValue({ blobId: 'ciphertext', type: 'message/rfc822', size: 10 });
++    vi.spyOn(client, 'getIdentities').mockResolvedValue([{ id: 'identity', email: 'sender@example.com', name: 'Sender', mayDelete: false }]);
++    answer(() => ({ methodResponses: [
++      ['Email/import', { created: { 'raw-import': { id: 'email' } } }, '0'],
++      ['EmailSubmission/set', { created: { 'raw-submit': { id: 'submission' } } }, '1'],
++    ] }));
++
++    await client.sendRawEmail(new Blob(['ciphertext']), 'identity', 'sent', 'drafts', undefined,
++      ['visible@example.com', 'hidden@example.com'], { isPgp: true, requireTls });
++
++    const submission = requests[0].methodCalls.find(([method]) => method === 'EmailSubmission/set')![1];
++    expect(submission).toMatchObject({ create: { 'raw-submit': { envelope: {
++      mailFrom: requireTls
++        ? { email: 'sender@example.com', parameters: { REQUIRETLS: null } }
++        : { email: 'sender@example.com' },
++      rcptTo: [{ email: 'visible@example.com' }, { email: 'hidden@example.com' }],
++    } } } });
++  });
++
+   describe('delta sync', () => {
+     it('maps Email/changes and passes sinceState / maxChanges', async () => {
+       await setup();
+diff --git a/lib/demo/demo-client.ts b/lib/demo/demo-client.ts
+index 223dc4f1..7a94346f 100644
+--- a/lib/demo/demo-client.ts
++++ b/lib/demo/demo-client.ts
+@@ -1,5 +1,5 @@
+ import type { IJMAPClient, KeywordDiscoveryResult, KeywordMigration } from '@/lib/jmap/client-interface';
+-import type { AccountInfo, Email, Mailbox, StateChange, AccountStates, Thread, Identity, EmailAddress, ContactCard, AddressBook, VacationResponse, Calendar, CalendarEvent, CalendarEventFilter, CalendarTask, FileNode, ScheduledEmail, SendEmailResult, SharedAccount } from '@/lib/jmap/types';
++import type { AccountInfo, Email, Mailbox, StateChange, AccountStates, Thread, Identity, EmailAddress, ContactCard, AddressBook, VacationResponse, Calendar, CalendarEvent, CalendarEventFilter, CalendarTask, FileNode, ScheduledEmail, SendEmailResult, RawSendOptions, SharedAccount } from '@/lib/jmap/types';
+ import type { SieveScript, SieveCapabilities } from '@/lib/jmap/sieve-types';
+ import { getDemoData, demoSharedAccounts, type DemoData, type DemoProfile } from './demo-data';
+ import { generateDemoId } from './demo-utils';
+@@ -1427,7 +1427,7 @@ export class DemoJMAPClient implements IJMAPClient {
+   async submitRawEmail(blob: Blob,
+     identityId: string,
+     delayedUntil?: string,
+-    _envelopeRecipients?: string[],): Promise<SendEmailResult> {
++    _envelopeRecipients?: string[], _options?: RawSendOptions): Promise<SendEmailResult> {
+     const emailId = generateDemoId('email');
+     let emailSubmissionId: string | undefined;
+     if (delayedUntil) {
+diff --git a/lib/jmap/client-interface.ts b/lib/jmap/client-interface.ts
+index 7bb3c8f5..0c3e1fe6 100644
+--- a/lib/jmap/client-interface.ts
++++ b/lib/jmap/client-interface.ts
+@@ -1,4 +1,4 @@
+-import type { Attachment, Email, Mailbox, MailboxRights, StateChange, AccountStates, CollectionChanges, ShareNotification, BusyPeriod, CalendarParticipantIdentity, CalendarEventNotification, Thread, Identity, EmailAddress, ContactCard, AddressBook, AddressBookRights, VacationResponse, Calendar, CreateCalendarOptions, CalendarRights, CalendarEvent, CalendarEventFilter, CalendarTask, FileNode, FileNodeRights, Principal, PrincipalAvailability, PrincipalListing, PushSubscription, EmailPushConfig, ScheduledEmail, SendEmailResult, SharedAccount } from "./types";
++import type { Attachment, Email, Mailbox, MailboxRights, StateChange, AccountStates, CollectionChanges, ShareNotification, BusyPeriod, CalendarParticipantIdentity, CalendarEventNotification, Thread, Identity, EmailAddress, ContactCard, AddressBook, AddressBookRights, VacationResponse, Calendar, CreateCalendarOptions, CalendarRights, CalendarEvent, CalendarEventFilter, CalendarTask, FileNode, FileNodeRights, Principal, PrincipalAvailability, PrincipalListing, PushSubscription, EmailPushConfig, ScheduledEmail, SendEmailResult, RawSendOptions, SharedAccount } from "./types";
+ import type { SieveScript, SieveCapabilities } from "./sieve-types";
+ import type { FileNameRules } from "@/lib/file-name-rules";
+ import type { SortLevel } from "@/lib/message-list-order";
+@@ -455,7 +455,7 @@ export interface IJMAPClient {
+     humanText?: string;
+   }): Promise<void>;
+ 
+-  sendRawEmail(blob: Blob, identityId: string, sentMailboxId: string, draftMailboxId?: string, delayedUntil?: string, envelopeRecipients?: string[]): Promise<SendEmailResult>;
++  sendRawEmail(blob: Blob, identityId: string, sentMailboxId: string, draftMailboxId?: string, delayedUntil?: string, envelopeRecipients?: string[], options?: RawSendOptions): Promise<SendEmailResult>;
+   submitRawEmail(blob: Blob, identityId: string, delayedUntil?: string, envelopeRecipients?: string[]): Promise<SendEmailResult>;
+   getScheduledEmails(limit?: number, position?: number): Promise<{ emails: ScheduledEmail[]; hasMore: boolean; total: number; totalByAccount?: Record<string, number>; nextPosition: number }>;
+   /** Cancels a pending submission, then destroys its record. */
+diff --git a/lib/jmap/client.ts b/lib/jmap/client.ts
+index ea24786f..9d2ec6a7 100644
+--- a/lib/jmap/client.ts
++++ b/lib/jmap/client.ts
+@@ -1,6 +1,6 @@
+ import { ArchiveEmailsError } from "./archive-error";
+ import { generateUUID } from '@/lib/utils';
+-import type { Attachment, Email, Mailbox, MailboxRights, StateChange, AccountStates, CollectionChanges, ShareNotification, BusyPeriod, CalendarParticipantIdentity, CalendarEventNotification, Thread, Identity, EmailAddress, ContactCard, AddressBook, AddressBookRights, VacationResponse, Calendar, CalendarComponentType, CalendarRights, CalendarEvent, CalendarEventFilter, CalendarTask, CreateCalendarOptions, FileNode, FileNodeFilter, FileNodeRights, Principal, PrincipalAvailability, PrincipalListing, PushSubscription, EmailPushConfig, DeliveryStatus, EmailSubmission, RejectedRecipient, ScheduledEmail, SendEmailResult, SharedAccount } from "./types";
++import type { Attachment, Email, Mailbox, MailboxRights, StateChange, AccountStates, CollectionChanges, ShareNotification, BusyPeriod, CalendarParticipantIdentity, CalendarEventNotification, Thread, Identity, EmailAddress, ContactCard, AddressBook, AddressBookRights, VacationResponse, Calendar, CalendarComponentType, CalendarRights, CalendarEvent, CalendarEventFilter, CalendarTask, CreateCalendarOptions, FileNode, FileNodeFilter, FileNodeRights, Principal, PrincipalAvailability, PrincipalListing, PushSubscription, EmailPushConfig, DeliveryStatus, EmailSubmission, RejectedRecipient, ScheduledEmail, SendEmailResult, RawSendOptions, SharedAccount } from "./types";
+ import type { SieveScript, SieveCapabilities } from "./sieve-types";
+ import type { BlobBatch, CalendarEventUpdateOptions, CalendarQueryOptions, FileNodeListings, IJMAPClient, KeywordDiscoveryResult, KeywordInfo, KeywordMigration, SearchEmailsResult, SearchRequestOptions } from "./client-interface";
+ import { attachSearchSnippets, filterHasSnippetTerms, snippetFilterFor, type SearchSnippetResult } from "@/lib/search-snippet";
+@@ -37,6 +37,7 @@ import { downloadNameSegment } from "./download-name";
+ import { toInertBlob } from "@/lib/file-preview";
+ import { toStorageQuota, type JMAPQuota, type StorageQuota } from "@/lib/quota";
+ import { messagePriorityHeaders, type MessagePriority } from "@/lib/message-priority";
++import { detectPgpMessage } from "@/lib/mailvelope/detect";
+ 
+ // Cap for the follow-up Email/get issued when a displayed body part comes
+ // back truncated at the normal 256000-byte limit (see refetchTruncatedBodyValues
+@@ -10676,6 +10677,7 @@ export class JMAPClient implements IJMAPClient {
+     draftMailboxId?: string,
+     delayedUntil?: string,
+     envelopeRecipients?: string[],
++    options?: RawSendOptions,
+   ): Promise<SendEmailResult> {
+     const holdForSeconds = delayedUntil ? this.validateDelayedUntil(delayedUntil) : undefined;
+     // Upload the raw message
+@@ -10687,7 +10689,8 @@ export class JMAPClient implements IJMAPClient {
+     const importMailboxId = draftMailboxId || sentMailboxId;
+     const identities = await this.getIdentities();
+     const identity = identities.find(item => item.id === identityId);
+-    const envelope = createDelayedSubmissionEnvelope(identity?.email || this.username, holdForSeconds, envelopeRecipients);
++    // REQUIRETLS for a raw (PGP/MIME) send, like the regular send path.
++    const envelope = createDelayedSubmissionEnvelope(identity?.email || this.username, holdForSeconds, envelopeRecipients, options);
+     // These raw/S-MIME paths submit through the primary submission account, so
+     // report that as the owning account rather than leaving it unset.
+     const submissionAccountId = this.getSubmissionAccountId();
+@@ -11035,6 +11038,7 @@ export class JMAPClient implements IJMAPClient {
+           scheduledAccountId: accountBySubmission.get(submission),
+           isScheduled: true,
+           isSmimeScheduled: isSmimeEmail(email),
++          isPgpScheduled: detectPgpMessage(email) !== null,
+         };
+       })
+       .filter((email): email is ScheduledEmail => email !== null)
+diff --git a/lib/jmap/types.ts b/lib/jmap/types.ts
+index d06f4ab7..122fdc2c 100644
+--- a/lib/jmap/types.ts
++++ b/lib/jmap/types.ts
+@@ -107,6 +107,25 @@ export interface Email {
+   scheduledAccountId?: string;
+   isScheduled?: boolean;
+   isSmimeScheduled?: boolean;
++  /**
++   * Scheduled message the composer cannot reconstruct (PGP/MIME or inline
++   * PGP): the plaintext never left the Mailvelope editor. Cancelling for edit
++   * must not hand the ciphertext to the composer, which would present an empty
++   * body that sends as plaintext.
++   */
++  isPgpScheduled?: boolean;
++}
++
++/** Options for JMAPClient.sendRawEmail beyond the message itself. */
++export interface RawSendOptions {
++  /** Require encrypted transport on every delivery hop. */
++  requireTls?: boolean;
++  /**
++   * The raw message is PGP/MIME. Read by the store, not the client: undo-send
++   * must not delete the only copy, because the plaintext lives solely inside
++   * the Mailvelope editor and is gone once the composer closes.
++   */
++  isPgp?: boolean;
+ }
+ 
+ export interface SendEmailResult {
+diff --git a/stores/email-store.ts b/stores/email-store.ts
+index 0204e205..e7a5f9f0 100644
+--- a/stores/email-store.ts
++++ b/stores/email-store.ts
+@@ -1,7 +1,7 @@
+ import { ArchiveEmailsError } from "@/lib/jmap/archive-error";
+ import { RescheduleRestoredError } from "@/lib/jmap/reschedule-error";
+ import { create } from "zustand";
+-import { Email, Mailbox, StateChange, ScheduledEmail, SendEmailResult, isUnifiedMailboxId, isCrossViewId } from "@/lib/jmap/types";
++import { Email, Mailbox, StateChange, ScheduledEmail, SendEmailResult, RawSendOptions, isUnifiedMailboxId, isCrossViewId } from "@/lib/jmap/types";
+ import type { UnifiedMailboxRole, CrossView } from "@/lib/jmap/types";
+ import type { IJMAPClient, SearchEmailsResult } from "@/lib/jmap/client-interface";
+ import { jmapErrorFailedIds } from "@/lib/jmap/jmap-error";
+@@ -54,6 +54,9 @@ type PendingUndoSend = {
+   identityId?: string;
+   sendAt: string;
+   isSmime: boolean;
++  /** PGP/MIME send. Undoing must keep the message: the plaintext only ever
++   *  existed inside the Mailvelope editor, which is unmounted by then. */
++  isPgp?: boolean;
+   /** Local account that owns the submission, when the message was sent from
+    *  an identity belonging to a non-active account (#461). */
+   localAccountId?: string;
+@@ -339,7 +342,7 @@ interface EmailStore {
+   fetchEmailContent: (client: IJMAPClient, emailId: string, ownerAccountId?: string) => Promise<Email | null>;
+   fetchQuota: (client: IJMAPClient) => Promise<void>;
+   sendEmail: (client: IJMAPClient, to: string[], subject: string, body: string, cc?: string[], bcc?: string[], identityId?: string, fromEmail?: string, draftId?: string, fromName?: string, htmlBody?: string, attachments?: Array<{ blobId: string; name: string; type: string; size: number; disposition?: 'attachment' | 'inline'; cid?: string }>, inReplyTo?: string[], references?: string[], delayedUntil?: string, envelopeMailFrom?: string, options?: { requestReadReceipt?: boolean; requestDsn?: boolean; requireTls?: boolean; priority?: MessagePriority; localAccountId?: string; draftAccountId?: string }) => Promise<SendEmailResult>;
+-  sendRawEmail: (client: IJMAPClient, rawMimeBlob: Blob, identityId: string, delayedUntil?: string, envelopeRecipients?: string[]) => Promise<SendEmailResult>;
++  sendRawEmail: (client: IJMAPClient, rawMimeBlob: Blob, identityId: string, delayedUntil?: string, envelopeRecipients?: string[], options?: RawSendOptions) => Promise<SendEmailResult>;
+   /** `emailKey` (emailKeyFor of the row) picks the right row when the id repeats across accounts. */
+   deleteEmail: (client: IJMAPClient, emailId: string, forceDelete?: boolean, emailKey?: string) => Promise<boolean>;
+   /** `emailKey` (emailKeyFor of the row) picks the right row when the id repeats across accounts. */
+@@ -3934,19 +3937,19 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
+     }
+   },
+ 
+-  sendRawEmail: async (client, rawMimeBlob, identityId, delayedUntil, envelopeRecipients) => {
++  sendRawEmail: async (client, rawMimeBlob, identityId, delayedUntil, envelopeRecipients, options) => {
+     set({ isLoading: true, error: null });
+     try {
+       const mailboxes = await client.getMailboxes();
+       const sentMailbox = mailboxes.find(mb => mb.role === 'sent');
+       if (!sentMailbox) throw new Error('No sent mailbox found');
+       const draftsMailbox = mailboxes.find(mb => mb.role === 'drafts');
+-      const result = await client.sendRawEmail(rawMimeBlob, identityId, sentMailbox.id, draftsMailbox?.id, delayedUntil, envelopeRecipients);
++      const result = await client.sendRawEmail(rawMimeBlob, identityId, sentMailbox.id, draftsMailbox?.id, delayedUntil, envelopeRecipients, options);
+       void client.pruneEmailSubmissions();
+       set({
+         isLoading: false,
+         pendingUndoSend: result.scheduled && result.emailSubmissionId && result.sendAt
+-          ? { submissionId: result.emailSubmissionId, emailId: result.emailId, identityId, sendAt: result.sendAt, isSmime: true, submissionAccountId: result.submissionAccountId }
++          ? { submissionId: result.emailSubmissionId, emailId: result.emailId, identityId, sendAt: result.sendAt, isSmime: true, isPgp: options?.isPgp, submissionAccountId: result.submissionAccountId }
+           : get().pendingUndoSend,
+       });
+       return result;
+@@ -7621,6 +7624,9 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
+     }
+     await get().fetchScheduledEmails(client);
+     if (email.isSmimeScheduled) return null;
++    // A PGP message is kept, like an undone PGP send, but never handed back:
++    // the composer would show an empty body for it and send that as plaintext.
++    if (email.isPgpScheduled) return null;
+     // Back in Drafts either way; the caller opens it when it can.
+     return client.getEmail(email.id, accountId).catch((error) => {
+       console.error('Failed to load the restored draft:', error);
+@@ -7676,18 +7682,22 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
+     // failed undo, which would tell the user the mail may still leave.
+     set({ pendingUndoSend: null });
+     try {
+-      if (pending.emailId && pending.isSmime) {
++      if (pending.emailId && pending.isSmime && !pending.isPgp) {
+         await client.deleteEmail(pending.emailId, accountId);
+         set(state => ({
+           selectedEmail: state.selectedEmail?.id === pending.emailId ? null : state.selectedEmail,
+           selectedEmailKeys: dropFromSelection(state, e => e.id === pending.emailId),
+         }));
+       } else if (pending.emailId) {
++        // PGP/MIME lands here too. Its ciphertext is the only copy of the message
++        // once the Mailvelope editor is unmounted, so undo keeps it in Drafts
++        // rather than deleting it. The composer cannot reopen it, so unlike a
++        // plain undo this returns null below and the message stays in Drafts.
+         await restoreSentToDraft(client, get().mailboxes, pending.emailId, accountId);
+       }
+     } catch (error) {
+       void get().refreshScheduledMetadata(client);
+-      throw new SendCancelledCleanupError(pending.isSmime ? 'remove' : 'restore', error);
++      throw new SendCancelledCleanupError(pending.isSmime && !pending.isPgp ? 'remove' : 'restore', error);
+     }
+     await get().refreshScheduledMetadata(client);
+     if (!pending.emailId || pending.isSmime) return null;

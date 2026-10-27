@@ -6,7 +6,7 @@ upstream at build time:
 | Path | Contents |
 | --- | --- |
 | `upstream/webmail` | Submodule pinned to an upstream release tag (no `v` prefix, for example `1.18.0`). |
-| `patches/*.patch` | Changes to upstream files, applied in name order with `git apply`. |
+| `patches/*.patch` | Changes to upstream files, one patch per topic, applied in name order with `git apply`. |
 | `src/` | New files, copied over the upstream tree at the same paths. |
 | `locales/<lang>/*.json` | Only the keys we add. They are merged into upstream's file of the same name. A language without a directory here gets the `en` keys. |
 | `tools/` | One-off helpers from the rebase onto 1.18.0. They are not part of the build. |
@@ -48,17 +48,39 @@ because the next prepare rebuilds the tree. The Stalwart zip is
 
 ## Changing upstream files
 
-Edit a scratch clone of the pinned upstream commit and write the diff back to
-the patch:
+Each patch covers one topic:
+
+| Patch | Changes |
+| --- | --- |
+| `0001-jmap-raw-send` | Sending a raw PGP/MIME message through JMAP, in the client and the email store |
+| `0002-send-and-undo` | Sending from the mail app, and undoing or cancelling an encrypted message |
+| `0003-composer` | The encrypt and sign controls in the composer, and blocking drafts and plugins while encrypting |
+| `0004-viewer` | Showing encrypted messages decrypted |
+| `0005-settings` | The PGP encryption settings tab |
+| `0006-csp` | Allowing Mailvelope's frames in the CSP, and the PGP section of the Lite README |
+| `0007-lite-release-urls` | Source and download links for builds published from this repository |
+
+To change them, edit a Git repository with one commit per patch:
 
 ```bash
-git clone -q upstream/webmail build/edit
-git -C build/edit apply ../../patches/0001-pgp-integration.patch
-# edit files in build/edit
-git -C build/edit diff > patches/0001-pgp-integration.patch
+node scripts/patches.mjs edit     # creates build/edit
+cd build/edit
+# edit, then fold the change into the right patch's commit:
+git commit -a --fixup=':/0003-composer'
+git rebase -i --autosquash upstream
+cd ../..
+node scripts/patches.mjs export   # rewrites patches/ from the commits
 rm -rf build/edit
 npm test
 ```
+
+A new commit whose subject is a patch name, such as `0008-topic`, becomes a
+new patch.
+
+After an upstream update, `edit` stops at a patch that no longer applies and
+leaves conflict markers in `build/edit`. Resolve them, commit the result with
+the patch's name as the subject (for example `git commit -am 0003-composer`),
+and run `edit` again to apply the remaining patches.
 
 New files belong in `src/`, not in a patch, and new locale keys belong in
 `locales/`.

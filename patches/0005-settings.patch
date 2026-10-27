@@ -1,0 +1,83 @@
+diff --git a/components/settings/settings-app.tsx b/components/settings/settings-app.tsx
+index 9de63f35..3f969e99 100644
+--- a/components/settings/settings-app.tsx
++++ b/components/settings/settings-app.tsx
+@@ -12,6 +12,7 @@ import {
+   Search,
+   User,
+   Shield,
++  KeyRound,
+   PalmtreeIcon,
+   Calendar,
+   Filter,
+@@ -35,6 +36,8 @@ import { GeneralSettings } from '@/components/settings/general-settings';
+ import { ReadingSettings } from '@/components/settings/reading-settings';
+ import { MessageListSettings } from '@/components/settings/message-list-settings';
+ import { ComposingSettings } from '@/components/settings/composing-settings';
++import { PgpSettings } from '@/components/settings/pgp-settings';
++import { usePgpAvailable } from '@/stores/mailvelope-store';
+ import { AccountSettings } from '@/components/settings/account-settings';
+ import { VacationSettings } from '@/components/settings/vacation-settings';
+ import { CalendarSettings } from '@/components/settings/calendar-settings';
+@@ -127,6 +130,7 @@ const tabIcons: Record<Tab, AppIcon> = {
+   filters: Filter,
+   organize: FolderOpen,
+   security: Shield,
++  pgp: KeyRound,
+   calendar: Calendar,
+   contacts: BookUser,
+   files: HardDrive,
+@@ -576,6 +580,8 @@ export function SettingsApp({ linkSegments: routeSegments }: SettingsAppProps =
+   // so the tab is only in the URL once the user is looking at its content.
+   // Must sit above the early return below - it is a hook.
+   const proInterfaceActive = useProInterfaceActive();
++  // Hook: must sit above the early return below.
++  const pgpAvailable = usePgpAvailable();
+   const isFocusedProTab = useIsFocusedProTab();
+   const settingsLinkPath = appPath(buildSettingsPath(!isDesktop && !mobileShowContent ? null : activeTab));
+   useDeepLinkUrl(
+@@ -634,6 +640,8 @@ export function SettingsApp({ linkSegments: routeSegments }: SettingsAppProps =
+     // You and the app
+     { id: 'account', label: t('tabs.account'), icon: tabIcons.account, group: 'top' },
+     ...(stalwartFeaturesEnabled ? [{ id: 'security' as Tab, label: t('tabs.security'), icon: tabIcons.security, group: 'top' as TabGroup }] : []),
++    // Only with the Mailvelope extension present and this origin authorized.
++    ...(pgpAvailable ? [{ id: 'pgp' as Tab, label: t('tabs.pgp'), icon: tabIcons.pgp, group: 'top' as TabGroup }] : []),
+     { id: 'notifications', label: t('tabs.notifications'), icon: tabIcons.notifications, group: 'top' },
+     { id: 'general', label: t('tabs.general'), icon: tabIcons.general, group: 'top' },
+     { id: 'appearance', label: t('tabs.appearance'), icon: tabIcons.appearance, group: 'top' },
+@@ -783,6 +791,7 @@ export function SettingsApp({ linkSegments: routeSegments }: SettingsAppProps =
+       {effectiveActiveTab === 'filters' && <FilterSettings />}
+       {effectiveActiveTab === 'organize' && <OrganizeSettings />}
+       {effectiveActiveTab === 'security' && <AccountSecuritySettings />}
++      {effectiveActiveTab === 'pgp' && <PgpSettings />}
+       {effectiveActiveTab === 'calendar' && (
+         managedAccountId
+           ? <CalendarManagementSettings />
+diff --git a/lib/settings-search.ts b/lib/settings-search.ts
+index 11fa0a4b..6398faeb 100644
+--- a/lib/settings-search.ts
++++ b/lib/settings-search.ts
+@@ -14,6 +14,7 @@ export type SettingsSearchTab =
+   | 'filters'
+   | 'organize'
+   | 'security'
++  | 'pgp'
+   | 'calendar'
+   | 'contacts'
+   | 'files'
+@@ -121,6 +122,7 @@ export const tabSearchPaths: Record<Tab, string[]> = {
+   filters: ['settings.filters'],
+   organize: ['settings.folders', 'settings.keywords'],
+   security: ['settings.security'],
++  pgp: ['settings.pgp'],
+   calendar: ['calendar.settings', 'calendar.management'],
+   contacts: ['settings.contacts', 'contacts'],
+   files: ['settings.files'],
+@@ -145,6 +147,7 @@ export const tabKeywords: Record<Tab, string> = {
+   filters: 'sieve rules block junk forward',
+   organize: 'folders mailbox subscribe roles tags labels keywords colors nested',
+   security: 'password 2fa two-factor passkey app password mfa api key token phone mobile app pair qr thunderbird outlook imap client encryption pgp smime',
++  pgp: 'openpgp gpg encrypt decrypt sign key mailvelope pgp/mime',
+   calendar: 'event schedule appointment meeting timezone invitation ics tasks birthday working hours',
+   contacts: 'address book contact',
+   files: 'attachments cloud drive storage upload',

@@ -1,0 +1,94 @@
+diff --git a/components/email/email-context-menu.tsx b/components/email/email-context-menu.tsx
+index 0050253c..e019825a 100644
+--- a/components/email/email-context-menu.tsx
++++ b/components/email/email-context-menu.tsx
+@@ -571,7 +571,7 @@ export function EmailContextMenu({
+           />
+           <ContextMenuItem
+             icon={EditIcon}
+-            label={email.isSmimeScheduled ? t("cancel_and_compose_again") : t("cancel_and_edit")}
++            label={email.isSmimeScheduled || email.isPgpScheduled ? t("cancel_and_compose_again") : t("cancel_and_edit")}
+             onClick={() => handleAction(onCancelScheduledForEdit!)}
+             disabled={!onCancelScheduledForEdit}
+           />
+diff --git a/components/mail/mail-app.tsx b/components/mail/mail-app.tsx
+index bbd5971b..7c9213d6 100644
+--- a/components/mail/mail-app.tsx
++++ b/components/mail/mail-app.tsx
+@@ -88,7 +88,7 @@ import { isFilterEmpty, activeFilterCount, DEFAULT_SEARCH_FILTERS } from "@/lib/
+ import { SearchBox, type ContactSearchField } from "@/components/search/search-box";
+ import { FilterPanelHost } from "@/components/search/filter-panel-host";
+ import type { ContactSuggestion } from "@/lib/search-suggestions";
+-import type { Attachment } from "@/lib/jmap/types";
++import type { Attachment, SendEmailResult } from "@/lib/jmap/types";
+ import { peekListAttachments, requestListAttachments, type ListAttachmentSource, type LoadListAttachments } from "@/lib/list-attachments";
+ import { useSearchHistoryStore } from "@/stores/search-history-store";
+ import { WelcomeBanner } from "@/components/ui/welcome-banner";
+@@ -2064,6 +2064,8 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+     requestDsn?: boolean;
+     requireTls?: boolean;
+     priority?: MessagePriority;
++    /** PGP/MIME: submits the already-encrypted message; the fields above are blank then. */
++    rawSend?: () => Promise<SendEmailResult>;
+   }) => {
+     // Nothing is sent: the composer keeps what only goes once the mail is out.
+     if (!client) return false;
+@@ -2087,7 +2089,9 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+       const effectiveMode = pendingDraft?.mode ?? composerMode;
+       const originalEmailId = composerSourceEmail?.id;
+ 
+-      const result = await sendEmail(sendClient, data.to, data.subject, data.body, data.cc, data.bcc, data.identityId, data.fromEmail, data.draftId, data.fromName, data.htmlBody, data.attachments, data.inReplyTo, data.references, data.delayedUntil, data.envelopeMailFrom, { requestReadReceipt: data.requestReadReceipt, requestDsn: data.requestDsn, requireTls: data.requireTls, priority: data.priority, localAccountId: data.localAccountId, draftAccountId: data.draftAccountId });
++      const result = data.rawSend
++        ? await data.rawSend()
++        : await sendEmail(sendClient, data.to, data.subject, data.body, data.cc, data.bcc, data.identityId, data.fromEmail, data.draftId, data.fromName, data.htmlBody, data.attachments, data.inReplyTo, data.references, data.delayedUntil, data.envelopeMailFrom, { requestReadReceipt: data.requestReadReceipt, requestDsn: data.requestDsn, requireTls: data.requireTls, priority: data.priority, localAccountId: data.localAccountId, draftAccountId: data.draftAccountId });
+       submitted = true;
+       announceSent(result, data);
+       setShowComposer(false);
+@@ -2530,6 +2534,9 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+                 // Back in the Drafts of the account it was sent from, through
+                 // the login that sent it.
+                 await handleEditDraft(restored, { accountId: pending.submissionAccountId, localAccountId: undoLogin });
++              } else if (pending.isPgp) {
++                // The composer cannot reopen ciphertext, so say where it went.
++                toast.success(t('pgp.undo_kept_draft'));
+               }
+               if (isScheduledView) await fetchScheduledEmails(client);
+             } catch (error) {
+@@ -4309,6 +4316,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+           fullEmail.scheduledAccountId = listEmail.scheduledAccountId;
+           fullEmail.isScheduled = true;
+           fullEmail.isSmimeScheduled = listEmail.isSmimeScheduled;
++          fullEmail.isPgpScheduled = listEmail.isPgpScheduled;
+         }
+         // Re-stamp the source reference so later actions on the open email
+         // resolve to the right account (the fetched object lacks these).
+@@ -4509,6 +4517,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+       }}
+     >
+       <EmailComposer
++        pgpSupported
+         key={composerSessionId}
+         mode={pendingDraft?.mode ?? composerMode}
+         composeFromAccountEmail={resolveComposeAccountEmail(
+@@ -5149,7 +5158,9 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+                   // The context menu does not wait for this; report here.
+                   const restored = await cancelScheduledForEdit(email);
+                   if (restored === undefined) return;
+-                  if (email.isSmimeScheduled) {
++                  if (email.isSmimeScheduled || email.isPgpScheduled) {
++                    // Neither can be reopened for editing; start a fresh message.
++                    if (email.isPgpScheduled) toast.success(t('pgp.undo_kept_draft'));
+                     setComposerMode('compose');
+                     setPendingDraft(null);
+                   } else if (restored) {
+@@ -5478,7 +5489,9 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+                       // The button does not wait for this; report here.
+                       const restored = await cancelScheduledForEdit(selectedEmail);
+                       if (restored === undefined) return;
+-                      if (selectedEmail.isSmimeScheduled) {
++                      if (selectedEmail.isSmimeScheduled || selectedEmail.isPgpScheduled) {
++                        // Neither can be reopened for editing; start a fresh message.
++                        if (selectedEmail.isPgpScheduled) toast.success(t('pgp.undo_kept_draft'));
+                         setComposerMode('compose');
+                         setShowComposer(true);
+                         return;

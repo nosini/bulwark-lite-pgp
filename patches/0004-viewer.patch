@@ -1,0 +1,90 @@
+diff --git a/components/email/email-viewer.tsx b/components/email/email-viewer.tsx
+index 54a8409d..49e2e6c2 100644
+--- a/components/email/email-viewer.tsx
++++ b/components/email/email-viewer.tsx
+@@ -12,6 +12,9 @@ import { DARK_PENDING_CLASS, applyEmailDarkMode, emailColorScheme, emailDarkMode
+ import { fitEmailBodyWidth } from "@/lib/email-fit-width";
+ import { hasFullBleedCanvas } from "@/lib/email-full-bleed";
+ import { stripBidiControls } from "@/lib/bidi";
++import { detectPgpMessage, pgpDetectionKey } from "@/lib/mailvelope/detect";
++import { MailvelopeDisplay } from "@/components/pgp/mailvelope-display";
++import { usePgpAvailable } from "@/stores/mailvelope-store";
+ import { withBasePath } from "@/lib/browser-navigation";
+ import { buildContactsPath, buildMailPath } from "@/lib/deep-links";
+ import { useCopyLink } from "@/hooks/use-copy-link";
+@@ -1261,6 +1264,20 @@ export function EmailViewer({
+   const blobClient = blobSource ? blobSource.client : legacyBlobClient;
+   const blobAccountId = blobSource ? blobSource.accountId : legacyBlobAccountId;
+ 
++  // PGP (PGP/MIME or inline) via the Mailvelope extension: when it is available
++  // and the message is encrypted, its iframe replaces the normal body. Detection
++  // is memoized on a stable key so an unrelated change to `email` (keywords,
++  // read state) does not restart decryption.
++  // The key is built from ids and lengths, never from the detection result:
++  // stringifying that copied the entire armored block, megabytes for a large
++  // inline message, on every render of the viewer.
++  const pgpAvailable = usePgpAvailable();
++  const pgpKey = pgpDetectionKey(email);
++  // eslint-disable-next-line react-hooks/exhaustive-deps
++  const pgpSource = useMemo(() => (pgpAvailable ? detectPgpMessage(email) : null), [pgpAvailable, pgpKey]);
++  const [pgpShowOriginalFor, setPgpShowOriginalFor] = useState<string | null>(null);
++  const showPgpDisplay = pgpSource !== null && pgpShowOriginalFor !== email?.id;
++
+   // List-Unsubscribe mailto: send the message ourselves - this is a webmail
+   // client, handing a mailto: URL to the OS mail handler goes nowhere for
+   // most users. Route to the email's own account in unified views and prefer
+@@ -2371,6 +2388,9 @@ export function EmailViewer({
+       // Hide machine-readable report parts (MDN read-receipts, DSN bounce
+       // reports). These are required MIME parts, not real user attachments.
+       .filter(att => att.type !== 'message/disposition-notification' && att.type !== 'message/delivery-status')
++      // The "Version: 1" control part and encrypted.asc are transport for the
++      // ciphertext Mailvelope is showing decrypted, not attachments.
++      .filter(att => !(pgpSource?.kind === 'pgp-mime' && showPgpDisplay && pgpSource.hiddenPartIds.includes(att.partId)))
+       .map((attachment, index) => ({
+         id: attachment.blobId || `${attachment.name || 'attachment'}-${index}`,
+         name: attachment.name || null,
+@@ -2406,7 +2426,7 @@ export function EmailViewer({
+     // the whole `email` object would rebuild the attachment list — and its
+     // downstream layout measurement — on every email field change.
+     // eslint-disable-next-line react-hooks/exhaustive-deps
+-  }, [email?.attachments, email?.htmlBody, email?.textBody, email?.bodyValues, pluginRenderedAttachments, pluginRenderedHtml, tnefHtml, tnefText, tnefAttachments, embeddedEmailAttachments, calendarInvitationParsingEnabled, hideInlineImageAttachments]);
++  }, [email?.attachments, email?.htmlBody, email?.textBody, email?.bodyValues, pluginRenderedAttachments, pluginRenderedHtml, tnefHtml, tnefText, tnefAttachments, embeddedEmailAttachments, calendarInvitationParsingEnabled, hideInlineImageAttachments, pgpSource, showPgpDisplay]);
+ 
+   // Measure attachment chips in the below-header row to determine how many fit
+   // on a single line; the rest collapse into a "+N attachments" overflow pill.
+@@ -3892,9 +3912,9 @@ export function EmailViewer({
+               <CalendarClock className="w-4 h-4" />
+               {showToolbarLabels && <span className="hidden sm:inline text-sm">{t('reschedule_send')}</span>}
+             </Button>
+-            <Button variant="ghost" size="sm" onClick={onCancelScheduledForEdit} className="hidden sm:flex sm:h-8 sm:gap-1.5 sm:py-0" title={email.isSmimeScheduled ? t('cancel_and_compose_again') : t('cancel_and_edit')}>
++            <Button variant="ghost" size="sm" onClick={onCancelScheduledForEdit} className="hidden sm:flex sm:h-8 sm:gap-1.5 sm:py-0" title={email.isSmimeScheduled || email.isPgpScheduled ? t('cancel_and_compose_again') : t('cancel_and_edit')}>
+               <EditIcon className="w-4 h-4" />
+-              {showToolbarLabels && <span className="hidden sm:inline text-sm">{email.isSmimeScheduled ? t('cancel_and_compose_again') : t('cancel_and_edit')}</span>}
++              {showToolbarLabels && <span className="hidden sm:inline text-sm">{email.isSmimeScheduled || email.isPgpScheduled ? t('cancel_and_compose_again') : t('cancel_and_edit')}</span>}
+             </Button>
+           </>
+         )}
+@@ -5804,7 +5824,7 @@ export function EmailViewer({
+                     </Button>
+                     <Button size="sm" variant="outline" onClick={onCancelScheduledForEdit} className="gap-1.5">
+                       <EditIcon className="w-3.5 h-3.5" />
+-                      {email.isSmimeScheduled ? t('cancel_and_compose_again') : t('cancel_and_edit')}
++                      {email.isSmimeScheduled || email.isPgpScheduled ? t('cancel_and_compose_again') : t('cancel_and_edit')}
+                     </Button>
+                   </>
+                 )}
+@@ -6304,6 +6324,14 @@ export function EmailViewer({
+                 <div className="h-2 bg-muted/15 rounded w-full"></div>
+                 <div className="h-2 bg-muted/15 rounded w-3/4"></div>
+               </div>
++            ) : showPgpDisplay && pgpSource ? (
++              <MailvelopeDisplay
++                key={email?.id}
++                source={pgpSource}
++                senderAddress={email?.from?.[0]?.email}
++                fetchBlob={(blobId, name, type) => blobClient!.fetchBlobArrayBuffer(blobId, name, type, blobAccountId)}
++                onShowOriginal={() => setPgpShowOriginalFor(email?.id ?? null)}
++              />
+             ) : effectiveEmailContent.isHtml ? (
+               <iframe
+                 ref={iframeRef}

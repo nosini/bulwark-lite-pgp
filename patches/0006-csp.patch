@@ -1,0 +1,129 @@
+diff --git a/lib/__tests__/lite-scripts.test.ts b/lib/__tests__/lite-scripts.test.ts
+index e879ebb6..638782ab 100644
+--- a/lib/__tests__/lite-scripts.test.ts
++++ b/lib/__tests__/lite-scripts.test.ts
+@@ -161,6 +161,8 @@ describe('lite build helpers', () => {
+     expect(headers).toContain("script-src 'self' 'unsafe-inline'");
+     expect(headers).toContain("connect-src 'self' https://mail.example.com");
+     expect(headers).toContain("frame-ancestors 'self'");
++    // Mailvelope's decrypt/editor/key-manager iframes come from the extension origin.
++    expect(headers).toContain("frame-src 'self' blob: chrome-extension: moz-extension:");
+     expect(headers).toContain('/_next/static/*');
+     expect(buildHeaders({ basePath: '/w', connectSrc: '*' })).toMatch(/^\/w\/\*/);
+   });
+diff --git a/lib/__tests__/proxy-security-headers.test.ts b/lib/__tests__/proxy-security-headers.test.ts
+index 4d1ec7ef..5a0fc9c1 100644
+--- a/lib/__tests__/proxy-security-headers.test.ts
++++ b/lib/__tests__/proxy-security-headers.test.ts
+@@ -92,6 +92,14 @@ describe('security headers on dotted app paths (GHSA-xvjh-v9c6-qcvc)', () => {
+     expect(response.headers.get('x-middleware-request-x-pathname')).toBe(path);
+   });
+ 
++  // Mailvelope's decrypted-mail, editor and key-manager iframes are served
++  // from the extension's own origin. Detection needs no iframe, so without
++  // these schemes the PGP UI appears and then every container stays blank.
++  it('lets the browser extension schemes be framed, so PGP containers render', async () => {
++    const csp = (await load('/en/mail/folder/inbox')).headers.get('content-security-policy') ?? '';
++    expect(csp).toContain("frame-src 'self' blob: chrome-extension: moz-extension:");
++  });
++
+   it('gives a dotted app path the same policy as its canonical sibling', async () => {
+     const dotted = await load('/en/mail/folder/inbox/statement.pdf');
+     const canonical = await load('/en/mail/folder/inbox');
+diff --git a/proxy.ts b/proxy.ts
+index a9cce10c..ea9afb8c 100644
+--- a/proxy.ts
++++ b/proxy.ts
+@@ -356,10 +356,17 @@ export async function proxy(request: NextRequest) {
+     frameOrigins.push(origin);
+   }
+ 
++  // Mailvelope (optional PGP support) renders decrypted mail, its editor and
++  // its key manager in iframes served from the extension's own origin. Without
++  // these schemes the extension still announces itself, so the PGP UI appears
++  // and then every container stays blank. Matches the Lite build's _headers.
++  // An extension the user installed can already read and rewrite this page
++  // through its content script, so framing from it grants nothing new.
++  const extensionFrameSrc = "chrome-extension: moz-extension:";
+   const frameSrc =
+     frameOrigins.length > 0
+-      ? `frame-src 'self' blob: ${frameOrigins.join(" ")}`
+-      : `frame-src 'self' blob:`;
++      ? `frame-src 'self' blob: ${extensionFrameSrc} ${frameOrigins.join(" ")}`
++      : `frame-src 'self' blob: ${extensionFrameSrc}`;
+ 
+   const csp = [
+     `default-src 'self'`,
+diff --git a/scripts/lite/lib.mjs b/scripts/lite/lib.mjs
+index 08a811f5..d4928235 100644
+--- a/scripts/lite/lib.mjs
++++ b/scripts/lite/lib.mjs
+@@ -374,7 +374,9 @@ export function buildCsp({ connectSrc = "*" } = {}) {
+     "img-src 'self' data: blob: https:",
+     "font-src 'self' https: data:",
+     `connect-src 'self' ${connectSrc}`,
+-    "frame-src 'self' blob:",
++    // Mailvelope (optional PGP support) renders decrypted mail, its editor and its
++    // key manager in iframes served from the extension's own origin.
++    "frame-src 'self' blob: chrome-extension: moz-extension:",
+     "object-src 'none'",
+     "base-uri 'self'",
+     "form-action 'self'",
+@@ -639,6 +641,41 @@ webmail.example.com {
+ `;
+ }
+ 
++/**
++ * The "PGP with Mailvelope" chapter of LITE-README.md. `target` only changes
++ * the last paragraph: what to do about the Content-Security-Policy.
++ */
++export function buildPgpReadmeSection(target) {
++  const csp = target === "stalwart"
++    ? `Stalwart sends no Content-Security-Policy for an Application. If a reverse
++proxy in front of it adds one, its \`frame-src\` must allow the extension's
++frames: \`frame-src 'self' blob: chrome-extension: moz-extension:\`.`
++    : `The generated \`_headers\` already allows the extension's frames
++(\`frame-src 'self' blob: chrome-extension: moz-extension:\`). If your host sets its
++own Content-Security-Policy (nginx, Caddy, a CDN), add those two schemes to its
++\`frame-src\`, otherwise the decrypted-mail and editor frames stay blank.`;
++  return `## PGP with Mailvelope (optional)
++
++Lite can read and send OpenPGP mail (PGP/MIME and inline PGP) through the
++Mailvelope browser extension. Keys and passphrases stay inside the extension
++and the mail server only ever receives ciphertext. Nothing PGP-related appears
++in the app until all of this is done:
++
++1. Install Mailvelope (Chrome, Edge or Firefox).
++2. In Mailvelope, open **Authorized Domains**, add this site (pattern
++   \`[*.]host.name.tld[:port]\`, for example \`mail.example.com\`) and switch on
++   its **API** option.
++3. Reload Lite. **Settings > PGP encryption** appears: generate or import your
++   key there, and the composer gets an encrypt button.
++
++${csp}
++
++Without the extension, or on a site that is not authorized, Lite behaves
++exactly as before. The subject, sender and recipients of an encrypted message
++are not encrypted, and encrypted messages are never saved as server drafts.
++`;
++}
++
+ export function buildReadme({ version, commit, basePath = "", locales, jmapServerUrl = "", demoMode = false }) {
+   return `# Bulwark Lite ${version} (${commit})
+ 
+@@ -698,6 +735,7 @@ ${basePath ? `  Both examples serve root-relative paths, so unzip into \`<web ro
+ \`_headers\` also carries the recommended security headers. Adjust
+ \`connect-src\` to your JMAP server's origin if you prefer a strict policy.
+ 
++${buildPgpReadmeSection("static")}
+ ## What is different from the full Bulwark Webmail
+ 
+ Everything that runs in the browser works: mail, threads, search, compose,
+@@ -1553,6 +1591,7 @@ name, turn "remember me" off or build any other variant, run the
+ you control, and use that URL as \`resourceUrl\`. \`config.json\` and
+ \`policy.json\` inside the zip take the same keys as in the static-host build.
+ 
++${buildPgpReadmeSection("stalwart")}
+ ## Differences from the static-host zip
+ 
+ - One entry document (\`index.html\`) boots every route: Stalwart has no
