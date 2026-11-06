@@ -1,8 +1,8 @@
 diff --git a/lib/__tests__/lite-scripts.test.ts b/lib/__tests__/lite-scripts.test.ts
-index e879ebb6..638782ab 100644
+index 8e103daa4..fc193efc1 100644
 --- a/lib/__tests__/lite-scripts.test.ts
 +++ b/lib/__tests__/lite-scripts.test.ts
-@@ -161,6 +161,8 @@ describe('lite build helpers', () => {
+@@ -162,6 +162,8 @@ describe('lite build helpers', () => {
      expect(headers).toContain("script-src 'self' 'unsafe-inline'");
      expect(headers).toContain("connect-src 'self' https://mail.example.com");
      expect(headers).toContain("frame-ancestors 'self'");
@@ -12,7 +12,7 @@ index e879ebb6..638782ab 100644
      expect(buildHeaders({ basePath: '/w', connectSrc: '*' })).toMatch(/^\/w\/\*/);
    });
 diff --git a/lib/__tests__/proxy-security-headers.test.ts b/lib/__tests__/proxy-security-headers.test.ts
-index 4d1ec7ef..5a0fc9c1 100644
+index 48201754c..34d4a39a5 100644
 --- a/lib/__tests__/proxy-security-headers.test.ts
 +++ b/lib/__tests__/proxy-security-headers.test.ts
 @@ -92,6 +92,14 @@ describe('security headers on dotted app paths (GHSA-xvjh-v9c6-qcvc)', () => {
@@ -31,10 +31,10 @@ index 4d1ec7ef..5a0fc9c1 100644
      const dotted = await load('/en/mail/folder/inbox/statement.pdf');
      const canonical = await load('/en/mail/folder/inbox');
 diff --git a/proxy.ts b/proxy.ts
-index a9cce10c..ea9afb8c 100644
+index eb767eb03..190574882 100644
 --- a/proxy.ts
 +++ b/proxy.ts
-@@ -356,10 +356,17 @@ export async function proxy(request: NextRequest) {
+@@ -403,10 +403,17 @@ export async function proxy(request: NextRequest) {
      frameOrigins.push(origin);
    }
  
@@ -55,10 +55,10 @@ index a9cce10c..ea9afb8c 100644
    const csp = [
      `default-src 'self'`,
 diff --git a/scripts/lite/lib.mjs b/scripts/lite/lib.mjs
-index 08a811f5..d4928235 100644
+index 559c09eca..470227342 100644
 --- a/scripts/lite/lib.mjs
 +++ b/scripts/lite/lib.mjs
-@@ -374,7 +374,9 @@ export function buildCsp({ connectSrc = "*" } = {}) {
+@@ -510,7 +510,9 @@ export function buildCsp({ connectSrc = "*", noThirdParty = false } = {}) {
      "img-src 'self' data: blob: https:",
      "font-src 'self' https: data:",
      `connect-src 'self' ${connectSrc}`,
@@ -69,7 +69,7 @@ index 08a811f5..d4928235 100644
      "object-src 'none'",
      "base-uri 'self'",
      "form-action 'self'",
-@@ -639,6 +641,41 @@ webmail.example.com {
+@@ -797,6 +799,41 @@ webmail.example.com {
  `;
  }
  
@@ -111,7 +111,7 @@ index 08a811f5..d4928235 100644
  export function buildReadme({ version, commit, basePath = "", locales, jmapServerUrl = "", demoMode = false }) {
    return `# Bulwark Lite ${version} (${commit})
  
-@@ -698,6 +735,7 @@ ${basePath ? `  Both examples serve root-relative paths, so unzip into \`<web ro
+@@ -860,6 +897,7 @@ ${basePath ? `  Both examples serve root-relative paths, so unzip into \`<web ro
  \`_headers\` also carries the recommended security headers. Adjust
  \`connect-src\` to your JMAP server's origin if you prefer a strict policy.
  
@@ -119,7 +119,7 @@ index 08a811f5..d4928235 100644
  ## What is different from the full Bulwark Webmail
  
  Everything that runs in the browser works: mail, threads, search, compose,
-@@ -1553,6 +1591,7 @@ name, turn "remember me" off or build any other variant, run the
+@@ -1721,6 +1759,7 @@ name, turn "remember me" off or build any other variant, run the
  you control, and use that URL as \`resourceUrl\`. \`config.json\` and
  \`policy.json\` inside the zip take the same keys as in the static-host build.
  

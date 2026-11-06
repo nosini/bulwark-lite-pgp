@@ -1,8 +1,8 @@
 diff --git a/lib/__tests__/lite-scripts.test.ts b/lib/__tests__/lite-scripts.test.ts
-index 638782ab..f5a8741f 100644
+index fc193efc1..99af5f2df 100644
 --- a/lib/__tests__/lite-scripts.test.ts
 +++ b/lib/__tests__/lite-scripts.test.ts
-@@ -126,6 +126,11 @@ describe('lite build helpers', () => {
+@@ -127,6 +127,11 @@ describe('lite build helpers', () => {
      expect(buildLiteConfig({ LITE_ALLOW_CUSTOM_ENDPOINT: 'false' }).allowCustomJmapEndpoint).toBe(false);
    });
  
@@ -14,7 +14,7 @@ index 638782ab..f5a8741f 100644
    it('hides the server field once a deployer fills in jmapServerUrl of the shipped config.json (#1087)', () => {
      const shipped = buildLiteConfig({});
      const edited = { ...shipped, jmapServerUrl: 'https://mail.example.com' };
-@@ -656,6 +661,13 @@ describe('Stalwart target: the entry document', () => {
+@@ -731,6 +736,13 @@ describe('Stalwart target: the entry document', () => {
      for (const segment of ['`mail`', '`calendar`', '`admin`', '`account`']) expect(readme).toContain(segment);
    });
  
@@ -29,11 +29,11 @@ index 638782ab..f5a8741f 100644
      const readme = buildStalwartReadme({ version: '1.10.0', commit: 'abc1234', locales: ['en'], buildId: 'b' });
      expect(readme).toContain('Requires: Stalwart 0.16.6 or later (0.16.19 for `oauthClientId`), or 1.0.');
 diff --git a/scripts/lite/lib.mjs b/scripts/lite/lib.mjs
-index d4928235..d7fec95d 100644
+index 470227342..f3997fb37 100644
 --- a/scripts/lite/lib.mjs
 +++ b/scripts/lite/lib.mjs
-@@ -170,6 +170,8 @@ export function buildLiteConfig(env = {}, { target = "static" } = {}) {
-     demoMode: parseBool(env.LITE_DEMO_MODE, false),
+@@ -185,6 +185,8 @@ export function buildLiteConfig(env = {}, { target = "static" } = {}) {
+     noThirdPartyTraffic: parseBool(env.LITE_NO_THIRD_PARTY_TRAFFIC, false),
      loginShowTotp: true,
      loginShowVersion: true,
 +    // A modified build links to its own source in Settings > About.
@@ -41,7 +41,7 @@ index d4928235..d7fec95d 100644
    };
  }
  
-@@ -1430,10 +1432,11 @@ export function collectZipEntries(dir) {
+@@ -1598,10 +1600,11 @@ export function collectZipEntries(dir) {
  }
  
  /** LITE-README.md for the Stalwart bundle. */
@@ -58,7 +58,7 @@ index d4928235..d7fec95d 100644
  
  Bulwark Webmail as a Stalwart \`Application\`: Stalwart downloads this zip,
 diff --git a/scripts/lite/postbuild.mjs b/scripts/lite/postbuild.mjs
-index 744b9572..bbbcd070 100644
+index bd183fd22..33851a126 100644
 --- a/scripts/lite/postbuild.mjs
 +++ b/scripts/lite/postbuild.mjs
 @@ -40,7 +40,7 @@ export function runPostbuild({ root = repoRoot, env = process.env, log = console
@@ -67,10 +67,10 @@ index 744b9572..bbbcd070 100644
    const files = target === "stalwart"
 -    ? stalwartFiles({ outDir, config, locales, defaultLocale, version, commit, buildId })
 +    ? stalwartFiles({ outDir, config, locales, defaultLocale, version, commit, buildId, env })
-     : staticFiles({ config, basePath, locales, defaultLocale, version, commit });
+     : staticFiles({ config, basePath, locales, defaultLocale, version, commit, notFoundMessages: readNotFoundMessages(root, locales) });
    files["lite-build.json"] = JSON.stringify({ version, commit, target, buildId, basePath, locales, builtAt: new Date().toISOString() }, null, 2) + "\n";
  
-@@ -87,7 +87,7 @@ function staticFiles({ config, basePath, locales, defaultLocale, version, commit
+@@ -98,7 +98,7 @@ function staticFiles({ config, basePath, locales, defaultLocale, version, commit
    };
  }
  
@@ -79,7 +79,7 @@ index 744b9572..bbbcd070 100644
    // Next's default not-found page and the static-host helpers have no place
    // in a bundle Stalwart serves: unknown paths always get the entry document.
    for (const name of STALWART_EXCLUDED_FILES) rmSync(join(outDir, name), { force: true });
-@@ -106,7 +106,11 @@ function stalwartFiles({ outDir, config, locales, defaultLocale, version, commit
+@@ -117,7 +117,11 @@ function stalwartFiles({ outDir, config, locales, defaultLocale, version, commit
      "policy.json": JSON.stringify(buildLitePolicy(), null, 2) + "\n",
      "manifest.json": JSON.stringify(buildStalwartManifest({ appName: config.appName }), null, 2) + "\n",
      "stalwart-app.json": JSON.stringify(buildStalwartAppManifest({ version }), null, 2) + "\n",

@@ -1,16 +1,8 @@
 diff --git a/components/settings/settings-app.tsx b/components/settings/settings-app.tsx
-index 9de63f35..3f969e99 100644
+index 93a658443..f8d9f8f37 100644
 --- a/components/settings/settings-app.tsx
 +++ b/components/settings/settings-app.tsx
-@@ -12,6 +12,7 @@ import {
-   Search,
-   User,
-   Shield,
-+  KeyRound,
-   PalmtreeIcon,
-   Calendar,
-   Filter,
-@@ -35,6 +36,8 @@ import { GeneralSettings } from '@/components/settings/general-settings';
+@@ -28,6 +28,8 @@ import { GeneralSettings } from '@/components/settings/general-settings';
  import { ReadingSettings } from '@/components/settings/reading-settings';
  import { MessageListSettings } from '@/components/settings/message-list-settings';
  import { ComposingSettings } from '@/components/settings/composing-settings';
@@ -19,15 +11,7 @@ index 9de63f35..3f969e99 100644
  import { AccountSettings } from '@/components/settings/account-settings';
  import { VacationSettings } from '@/components/settings/vacation-settings';
  import { CalendarSettings } from '@/components/settings/calendar-settings';
-@@ -127,6 +130,7 @@ const tabIcons: Record<Tab, AppIcon> = {
-   filters: Filter,
-   organize: FolderOpen,
-   security: Shield,
-+  pgp: KeyRound,
-   calendar: Calendar,
-   contacts: BookUser,
-   files: HardDrive,
-@@ -576,6 +580,8 @@ export function SettingsApp({ linkSegments: routeSegments }: SettingsAppProps =
+@@ -592,6 +594,8 @@ export function SettingsApp({ linkSegments: routeSegments }: SettingsAppProps =
    // so the tab is only in the URL once the user is looking at its content.
    // Must sit above the early return below - it is a hook.
    const proInterfaceActive = useProInterfaceActive();
@@ -36,48 +20,69 @@ index 9de63f35..3f969e99 100644
    const isFocusedProTab = useIsFocusedProTab();
    const settingsLinkPath = appPath(buildSettingsPath(!isDesktop && !mobileShowContent ? null : activeTab));
    useDeepLinkUrl(
-@@ -634,6 +640,8 @@ export function SettingsApp({ linkSegments: routeSegments }: SettingsAppProps =
+@@ -651,6 +655,8 @@ export function SettingsApp({ linkSegments: routeSegments }: SettingsAppProps =
      // You and the app
      { id: 'account', label: t('tabs.account'), icon: tabIcons.account, group: 'top' },
      ...(stalwartFeaturesEnabled ? [{ id: 'security' as Tab, label: t('tabs.security'), icon: tabIcons.security, group: 'top' as TabGroup }] : []),
 +    // Only with the Mailvelope extension present and this origin authorized.
 +    ...(pgpAvailable ? [{ id: 'pgp' as Tab, label: t('tabs.pgp'), icon: tabIcons.pgp, group: 'top' as TabGroup }] : []),
+     ...(supportsSharing ? [{ id: 'sharing' as Tab, label: tDelegates('tab'), icon: tabIcons.sharing, group: 'top' as TabGroup }] : []),
      { id: 'notifications', label: t('tabs.notifications'), icon: tabIcons.notifications, group: 'top' },
      { id: 'general', label: t('tabs.general'), icon: tabIcons.general, group: 'top' },
-     { id: 'appearance', label: t('tabs.appearance'), icon: tabIcons.appearance, group: 'top' },
-@@ -783,6 +791,7 @@ export function SettingsApp({ linkSegments: routeSegments }: SettingsAppProps =
-       {effectiveActiveTab === 'filters' && <FilterSettings />}
-       {effectiveActiveTab === 'organize' && <OrganizeSettings />}
+@@ -861,6 +867,7 @@ export function SettingsApp({ linkSegments: routeSegments }: SettingsAppProps =
        {effectiveActiveTab === 'security' && <AccountSecuritySettings />}
+       {effectiveActiveTab === 'sharing' && <DelegatesSettings />}
+       {effectiveActiveTab === RECOVERY_SETTINGS_TAB && <RecoverDeletedSettings />}
 +      {effectiveActiveTab === 'pgp' && <PgpSettings />}
        {effectiveActiveTab === 'calendar' && (
          managedAccountId
            ? <CalendarManagementSettings />
+diff --git a/components/settings/settings-tab-icons.ts b/components/settings/settings-tab-icons.ts
+index a46bc21c4..121025604 100644
+--- a/components/settings/settings-tab-icons.ts
++++ b/components/settings/settings-tab-icons.ts
+@@ -4,6 +4,7 @@ import {
+   Palette,
+   User,
+   Shield,
++  KeyRound,
+   PalmtreeIcon,
+   Calendar,
+   Filter,
+@@ -40,6 +41,7 @@ export const SETTINGS_TAB_ICONS: Record<SettingsSearchTab, AppIcon> = {
+   filters: Filter,
+   organize: FolderOpen,
+   security: Shield,
++  pgp: KeyRound,
+   sharing: Users,
+   recovery: RotateCcw,
+   calendar: Calendar,
 diff --git a/lib/settings-search.ts b/lib/settings-search.ts
-index 11fa0a4b..6398faeb 100644
+index c3924f6d7..05d7d11ae 100644
 --- a/lib/settings-search.ts
 +++ b/lib/settings-search.ts
-@@ -14,6 +14,7 @@ export type SettingsSearchTab =
+@@ -15,6 +15,7 @@ export type SettingsSearchTab =
    | 'filters'
    | 'organize'
    | 'security'
 +  | 'pgp'
+   | 'sharing'
+   | 'recovery'
    | 'calendar'
-   | 'contacts'
-   | 'files'
-@@ -121,6 +122,7 @@ export const tabSearchPaths: Record<Tab, string[]> = {
-   filters: ['settings.filters'],
-   organize: ['settings.folders', 'settings.keywords'],
-   security: ['settings.security'],
-+  pgp: ['settings.pgp'],
-   calendar: ['calendar.settings', 'calendar.management'],
-   contacts: ['settings.contacts', 'contacts'],
-   files: ['settings.files'],
-@@ -145,6 +147,7 @@ export const tabKeywords: Record<Tab, string> = {
-   filters: 'sieve rules block junk forward',
+@@ -305,6 +306,8 @@ export const tabSearchEntries: Record<Tab, SettingsSearchEntry[]> = {
+     { label: 'settings.security.email_client.title' },
+     { label: 'settings.security.link_device.title' },
+   ],
++  // Matched by its name and keywords only: the page has no search anchors.
++  pgp: [],
+   sharing: [
+     { label: 'delegates.title' },
+   ],
+@@ -384,6 +387,7 @@ export const tabKeywords: Record<Tab, string> = {
+   filters: 'sieve rules add create new block junk forward',
    organize: 'folders mailbox subscribe roles tags labels keywords colors nested',
    security: 'password 2fa two-factor passkey app password mfa api key token phone mobile app pair qr thunderbird outlook imap client encryption pgp smime',
 +  pgp: 'openpgp gpg encrypt decrypt sign key mailvelope pgp/mime',
+   sharing: 'delegate delegation share access assistant permissions revoke folders calendars contacts colleague',
+   recovery: 'recover restore undelete deleted trash emptied lost messages',
    calendar: 'event schedule appointment meeting timezone invitation ics tasks birthday working hours',
-   contacts: 'address book contact',
-   files: 'attachments cloud drive storage upload',
