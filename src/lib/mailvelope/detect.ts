@@ -16,16 +16,30 @@ export type PgpMessageSource =
       /** Part ids of the control and payload parts, hidden from the attachment list. */
       hiddenPartIds: string[];
     }
-  | { kind: 'inline'; armored: string };
+  | {
+      kind: 'inline';
+      armored: string;
+      /**
+       * The body has text outside the armored block (a note above it, a
+       * mailing-list footer below). Mailvelope shows only the block, so the
+       * reader has to be told that there is more under "Show original".
+       */
+      hasOtherText: boolean;
+    };
 
 const PGP_ENCRYPTED_PROTOCOL = 'application/pgp-encrypted';
 
 /**
- * One armored block a display container can open: an encrypted message, or a
- * cleartext-signed one (which ends with the signature block).
+ * One armored encrypted message, with its markers on lines of their own.
+ *
+ * Only `PGP MESSAGE`: Mailvelope's display container refuses cleartext-signed
+ * messages (`WRONG_ARMORED_TYPE`, "PGP signatures not supported"), so those are
+ * left to the normal rendering, where their text is readable anyway.
+ *
+ * Anchored to line starts so that armor quoted in a reply (`> -----BEGIN …`) or
+ * mentioned mid-sentence is not mistaken for the message itself.
  */
-const ARMORED_BLOCK_RE =
-  /-----BEGIN PGP MESSAGE-----[\s\S]*?-----END PGP MESSAGE-----|-----BEGIN PGP SIGNED MESSAGE-----[\s\S]*?-----END PGP SIGNATURE-----/;
+const INLINE_MESSAGE_RE = /^-----BEGIN PGP MESSAGE-----[ \t]*\r?$[\s\S]*?^-----END PGP MESSAGE-----[ \t]*\r?$/m;
 
 const ARMORED_MESSAGE_RE = /-----BEGIN PGP MESSAGE-----[\s\S]*?-----END PGP MESSAGE-----/;
 
@@ -43,11 +57,18 @@ export function normalizeArmor(armored: string): string {
     .trim();
 }
 
-/** First armored PGP block in `text`, normalized, or null. */
-export function extractInlineArmor(text: string | undefined | null): string | null {
+/**
+ * First armored `PGP MESSAGE` block in `text` that starts on a line of its own,
+ * normalized, and whether anything but whitespace surrounds it; or null.
+ */
+export function extractInlineArmor(
+  text: string | undefined | null,
+): { armored: string; hasOtherText: boolean } | null {
   if (!text) return null;
-  const match = ARMORED_BLOCK_RE.exec(text);
-  return match ? normalizeArmor(match[0]) : null;
+  const match = INLINE_MESSAGE_RE.exec(text);
+  if (!match) return null;
+  const outside = text.slice(0, match.index) + text.slice(match.index + match[0].length);
+  return { armored: normalizeArmor(match[0]), hasOtherText: outside.trim() !== '' };
 }
 
 /** The armored ciphertext out of a decoded `encrypted.asc` part, or null. */
@@ -111,8 +132,8 @@ function detectInlinePgp(email: Email): PgpMessageSource | null {
     if (part.type && part.type.toLowerCase() !== 'text/plain') continue;
     const value = email.bodyValues?.[part.partId];
     if (!value || value.isTruncated) continue;
-    const armored = extractInlineArmor(value.value);
-    if (armored) return { kind: 'inline', armored };
+    const found = extractInlineArmor(value.value);
+    if (found) return { kind: 'inline', ...found };
   }
   return null;
 }

@@ -50,13 +50,35 @@ describe('undo-send for raw messages', () => {
     vi.clearAllMocks();
   });
 
-  it('records isPgp on the pending undo when the raw send is PGP/MIME', async () => {
+  it('records that undo keeps a PGP/MIME message, and gives the client only its own options', async () => {
     const client = makeClient();
     await useEmailStore.getState().sendRawEmail(
       client, new Blob(['raw']), 'identity-1', new Date(Date.now() + 10_000).toISOString(), ['b@example.org'],
-      { isPgp: true },
+      { isPgp: true, requestDsn: true },
     );
-    expect(useEmailStore.getState().pendingUndoSend).toMatchObject({ isSmime: true, isPgp: true });
+    expect(useEmailStore.getState().pendingUndoSend).toMatchObject({ onUndo: 'keep' });
+    expect((client.sendRawEmail as ReturnType<typeof vi.fn>).mock.calls[0][6]).toEqual({ requestDsn: true });
+  });
+
+  it('records that undo deletes any other raw message', async () => {
+    const client = makeClient();
+    await useEmailStore.getState().sendRawEmail(
+      client, new Blob(['raw']), 'identity-1', new Date(Date.now() + 10_000).toISOString(), ['b@example.org'],
+    );
+    expect(useEmailStore.getState().pendingUndoSend).toMatchObject({ onUndo: 'delete' });
+  });
+
+  // Undo and send-now pick their client by localAccountId (#461). Without it
+  // they went to the active account, failed on an unknown submission id, and
+  // the message went out despite Undo.
+  it('records the account a raw message was sent from, so undo reaches it', async () => {
+    const client = makeClient();
+    await useEmailStore.getState().sendRawEmail(
+      client, new Blob(['raw']), 'identity-1', new Date(Date.now() + 10_000).toISOString(), ['b@example.org'],
+      { isPgp: true, localAccountId: 'account-2' },
+    );
+    expect(useEmailStore.getState().pendingUndoSend).toMatchObject({ onUndo: 'keep', localAccountId: 'account-2' });
+    expect((client.sendRawEmail as ReturnType<typeof vi.fn>).mock.calls[0][6]).toEqual({});
   });
 
   it('keeps the encrypted message in Drafts instead of deleting it', async () => {
@@ -66,8 +88,7 @@ describe('undo-send for raw messages', () => {
       emailId: 'email-1',
       identityId: 'identity-1',
       sendAt: new Date().toISOString(),
-      isSmime: true,
-      isPgp: true,
+      onUndo: 'keep',
     });
 
     expect(client.cancelEmailSubmission).toHaveBeenCalledWith('sub-1', undefined);
@@ -85,7 +106,7 @@ describe('undo-send for raw messages', () => {
       emailId: 'email-1',
       identityId: 'identity-1',
       sendAt: new Date().toISOString(),
-      isSmime: true,
+      onUndo: 'delete',
     });
 
     expect(client.deleteEmail).toHaveBeenCalledWith('email-1', undefined);
@@ -99,7 +120,7 @@ describe('undo-send for raw messages', () => {
       emailId: 'email-1',
       identityId: 'identity-1',
       sendAt: new Date().toISOString(),
-      isSmime: false,
+      onUndo: 'reopen',
     });
 
     expect(client.deleteEmail).not.toHaveBeenCalled();

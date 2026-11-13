@@ -5,13 +5,14 @@ import { PgpSettings } from '../pgp-settings';
 const mv = vi.hoisted(() => ({
   createSettingsContainer: vi.fn(),
   openSettings: vi.fn(),
-  hasContainerApi: true,
+  toastError: vi.fn(),
 }));
 
 vi.mock('@/stores/mailvelope-store', () => {
   const keyring = { identifier: 'k', openSettings: (...a: unknown[]) => mv.openSettings(...a) };
   const state = () => ({
-    api: mv.hasContainerApi ? { createSettingsContainer: (...a: unknown[]) => mv.createSettingsContainer(...a) } : {},
+    // What Mailvelope 6.3 exposes: the function exists but always rejects.
+    api: { createSettingsContainer: (...a: unknown[]) => mv.createSettingsContainer(...a) },
     keyring,
     version: '6.3.0',
   });
@@ -20,51 +21,35 @@ vi.mock('@/stores/mailvelope-store', () => {
   return { useMailvelopeStore: hook };
 });
 
-vi.mock('@/stores/identity-store', () => {
-  const state = { identities: [{ id: 'i1', email: 'me@example.com', name: 'Me Myself <me@example.com>' }] };
-  const hook = (sel?: (s: typeof state) => unknown) => (typeof sel === 'function' ? sel(state) : state);
-  return { useIdentityStore: hook };
-});
-
-vi.mock('@/stores/toast-store', () => ({ toast: { error: vi.fn(), info: vi.fn(), success: vi.fn() } }));
+vi.mock('@/stores/toast-store', () => ({ toast: { error: mv.toastError, info: vi.fn(), success: vi.fn() } }));
 
 beforeEach(() => {
-  mv.hasContainerApi = true;
-  mv.createSettingsContainer.mockReset().mockResolvedValue(undefined);
+  mv.createSettingsContainer.mockReset().mockRejectedValue(Object.assign(new Error('deprecated'), { code: 'FEATURE_DEPRECATED' }));
   mv.openSettings.mockReset().mockResolvedValue(undefined);
+  mv.toastError.mockReset();
 });
 
 describe('PgpSettings', () => {
-  it('embeds the extension key manager, prefilled with the sender identity, and shows the connected version', async () => {
+  it('shows the connected version and offers the extension settings, without an embedded frame that cannot load', () => {
     render(<PgpSettings />);
-    await waitFor(() => expect(mv.createSettingsContainer).toHaveBeenCalledTimes(1));
-
-    const [selector, keyring, options] = mv.createSettingsContainer.mock.calls[0];
-    expect(selector).toMatch(/^#mailvelope-host-\d+$/);
-    expect(keyring).toMatchObject({ identifier: 'k' });
-    // Identity names come back as "Name <addr>"; only the name is a name.
-    expect(options).toEqual({ email: 'me@example.com', fullName: 'Me Myself' });
     expect(screen.getByText('status_connected')).toBeInTheDocument();
-    expect(screen.getByTestId('pgp-settings-frame')).not.toHaveAttribute('hidden');
-  });
-
-  it('falls back to the settings button when the deprecated container is gone', async () => {
-    mv.hasContainerApi = false;
-    render(<PgpSettings />);
-    expect(await screen.findByText('keys_embed_failed')).toBeInTheDocument();
+    expect(screen.getByText('open_settings')).toBeInTheDocument();
+    // Mailvelope 6.3 rejects createSettingsContainer unconditionally.
     expect(mv.createSettingsContainer).not.toHaveBeenCalled();
-    expect(screen.getByTestId('pgp-settings-frame')).toHaveAttribute('hidden');
-  });
-
-  it('falls back when the container fails to load', async () => {
-    mv.createSettingsContainer.mockRejectedValue(new Error('boom'));
-    render(<PgpSettings />);
-    expect(await screen.findByText('keys_embed_failed')).toBeInTheDocument();
+    expect(screen.queryByTestId('pgp-settings-frame')).toBeNull();
   });
 
   it('opens the extension settings in its own tab', async () => {
     render(<PgpSettings />);
     fireEvent.click(screen.getByText('open_settings'));
     await waitFor(() => expect(mv.openSettings).toHaveBeenCalledTimes(1));
+    expect(mv.toastError).not.toHaveBeenCalled();
+  });
+
+  it('says so when the settings tab cannot be opened', async () => {
+    mv.openSettings.mockRejectedValue(new Error('nope'));
+    render(<PgpSettings />);
+    fireEvent.click(screen.getByText('open_settings'));
+    await waitFor(() => expect(mv.toastError).toHaveBeenCalledWith('open_settings_failed'));
   });
 });

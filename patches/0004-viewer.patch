@@ -1,18 +1,19 @@
 diff --git a/components/email/email-viewer.tsx b/components/email/email-viewer.tsx
-index 212d8f3ed..bc71d626f 100644
+index 212d8f3ed..2cebe9dd1 100644
 --- a/components/email/email-viewer.tsx
 +++ b/components/email/email-viewer.tsx
-@@ -23,6 +23,9 @@ import { measureEmailFrameHeight } from "@/lib/email-frame-height";
+@@ -23,6 +23,10 @@ import { measureEmailFrameHeight } from "@/lib/email-frame-height";
  import { DARK_PENDING_CLASS, applyEmailDarkMode, emailColorScheme, emailDarkModeCss, emailHasNativeDarkMode as htmlHasNativeDarkMode, resolveColorSchemeMedia } from "@/lib/email-dark-mode";
  import { fitEmailBodyWidth, type FitOptions } from "@/lib/email-fit-width";
  import { hasFullBleedCanvas } from "@/lib/email-full-bleed";
 +import { detectPgpMessage, pgpDetectionKey } from "@/lib/mailvelope/detect";
++import { isScheduledComposeAgainOnly } from "@/lib/compose-reopen";
 +import { MailvelopeDisplay } from "@/components/pgp/mailvelope-display";
 +import { usePgpAvailable } from "@/stores/mailvelope-store";
  import { withBasePath } from "@/lib/browser-navigation";
  import { buildContactsPath } from "@/lib/deep-links";
  import { Button } from "@/components/ui/button";
-@@ -1529,6 +1532,20 @@ export function EmailViewer({
+@@ -1529,6 +1533,20 @@ export function EmailViewer({
    // blob is copied over (Blob/copy). Another login's mail can't be.
    const canSaveToFiles = filesFeatureEnabled && !!client && blobClient === client && !!client.supportsFiles?.();
  
@@ -33,7 +34,7 @@ index 212d8f3ed..bc71d626f 100644
    // List-Unsubscribe mailto: send the message ourselves - this is a webmail
    // client, handing a mailto: URL to the OS mail handler goes nowhere for
    // most users. Route to the email's own account in unified views and prefer
-@@ -2635,6 +2652,9 @@ export function EmailViewer({
+@@ -2635,6 +2653,9 @@ export function EmailViewer({
        // Hide machine-readable report parts (MDN read-receipts, DSN bounce
        // reports). These are required MIME parts, not real user attachments.
        .filter(att => !isReportPart(att.type))
@@ -43,7 +44,7 @@ index 212d8f3ed..bc71d626f 100644
        .map((attachment, index) => ({
          id: attachment.blobId || `${attachment.name || 'attachment'}-${index}`,
          name: attachment.name || null,
-@@ -2670,7 +2690,7 @@ export function EmailViewer({
+@@ -2670,7 +2691,7 @@ export function EmailViewer({
      // the whole `email` object would rebuild the attachment list — and its
      // downstream layout measurement — on every email field change.
      // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -52,28 +53,28 @@ index 212d8f3ed..bc71d626f 100644
  
    // Whether external resources must be blocked for the message on screen.
    // Shared by every body path - the message's own HTML, TNEF, unwrapped
-@@ -4185,9 +4205,9 @@ ${printWatermark ? printWatermark.html : ''}
+@@ -4185,9 +4206,9 @@ ${printWatermark ? printWatermark.html : ''}
                <CalendarClock className="w-4 h-4" />
                {showToolbarLabels && <span className="hidden sm:inline text-sm whitespace-nowrap">{t('reschedule_send')}</span>}
              </Button>
 -            <Button variant="ghost" size="sm" onClick={onCancelScheduledForEdit} className="hidden sm:flex sm:h-8 sm:gap-1.5 sm:py-0" title={email.isSmimeScheduled ? t('cancel_and_compose_again') : t('cancel_and_edit')}>
-+            <Button variant="ghost" size="sm" onClick={onCancelScheduledForEdit} className="hidden sm:flex sm:h-8 sm:gap-1.5 sm:py-0" title={email.isSmimeScheduled || email.isPgpScheduled ? t('cancel_and_compose_again') : t('cancel_and_edit')}>
++            <Button variant="ghost" size="sm" onClick={onCancelScheduledForEdit} className="hidden sm:flex sm:h-8 sm:gap-1.5 sm:py-0" title={isScheduledComposeAgainOnly(email) ? t('cancel_and_compose_again') : t('cancel_and_edit')}>
                <Pencil className="w-4 h-4" />
 -              {showToolbarLabels && <span className="hidden sm:inline text-sm whitespace-nowrap">{email.isSmimeScheduled ? t('cancel_and_compose_again') : t('cancel_and_edit')}</span>}
-+              {showToolbarLabels && <span className="hidden sm:inline text-sm whitespace-nowrap">{email.isSmimeScheduled || email.isPgpScheduled ? t('cancel_and_compose_again') : t('cancel_and_edit')}</span>}
++              {showToolbarLabels && <span className="hidden sm:inline text-sm whitespace-nowrap">{isScheduledComposeAgainOnly(email) ? t('cancel_and_compose_again') : t('cancel_and_edit')}</span>}
              </Button>
              {onCancelScheduledSend && !email.isSmimeScheduled && (
                <Button variant="ghost" size="sm" onClick={onCancelScheduledSend} className="hidden sm:flex sm:h-8 sm:gap-1.5 sm:py-0" title={t('cancel_scheduled_send')} data-testid="cancel-scheduled-send">
-@@ -5541,7 +5561,7 @@ ${printWatermark ? printWatermark.html : ''}
+@@ -5541,7 +5562,7 @@ ${printWatermark ? printWatermark.html : ''}
                      </Button>
                      <Button size="sm" variant="outline" onClick={onCancelScheduledForEdit} className="gap-1.5">
                        <Pencil className="w-3.5 h-3.5" />
 -                      {email.isSmimeScheduled ? t('cancel_and_compose_again') : t('cancel_and_edit')}
-+                      {email.isSmimeScheduled || email.isPgpScheduled ? t('cancel_and_compose_again') : t('cancel_and_edit')}
++                      {isScheduledComposeAgainOnly(email) ? t('cancel_and_compose_again') : t('cancel_and_edit')}
                      </Button>
                      {onCancelScheduledSend && !email.isSmimeScheduled && (
                        <Button size="sm" variant="outline" onClick={onCancelScheduledSend} className="gap-1.5">
-@@ -5756,6 +5776,14 @@ ${printWatermark ? printWatermark.html : ''}
+@@ -5756,6 +5777,14 @@ ${printWatermark ? printWatermark.html : ''}
                  <div className="h-2 bg-muted/15 rounded w-full"></div>
                  <div className="h-2 bg-muted/15 rounded w-3/4"></div>
                </div>

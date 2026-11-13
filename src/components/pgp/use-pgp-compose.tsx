@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslations } from 'next-intl';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
@@ -19,8 +19,20 @@ import type { PgpComposeMode } from './pgp-compose-controls';
 import { useRecipientKeyStatus } from './use-recipient-key-status';
 
 export interface UsePgpComposeOptions {
-  /** Every To/Cc/Bcc address, including text typed but not yet committed. */
+  /**
+   * Every committed To/Cc/Bcc address. Only these are looked up: text still in
+   * a recipient field may be half typed, and Mailvelope resolves an address it
+   * has no key for over WKD or a key server.
+   */
   recipients: string[];
+  /** Text typed in a recipient field but not yet committed. Blocks Send. */
+  uncommittedRecipients: string[];
+  /**
+   * Whether there are Bcc recipients. Blocks Send: one OpenPGP message carries a
+   * session-key packet per recipient key, so every recipient could read the Bcc
+   * recipients' key ids off the message.
+   */
+  hasBcc: boolean;
   /** Files already uploaded to the server in plain form. */
   hasAttachments: boolean;
   /** What has been typed so far, carried into the encrypted editor. */
@@ -30,6 +42,11 @@ export interface UsePgpComposeOptions {
   discardServerDraft: () => Promise<void>;
   /** The typed text now lives in the encrypted editor: clear Bulwark's copy. */
   onEncryptionStarted: () => void;
+  /**
+   * Start with encryption on: a composer that was encrypting when it was
+   * suspended comes back encrypted (with an empty editor), never as plaintext.
+   */
+  initialMode?: PgpComposeMode;
 }
 
 export interface PgpSendParams {
@@ -39,12 +56,21 @@ export interface PgpSendParams {
   from: MimeAddress;
   to: MimeAddress[];
   cc: MimeAddress[];
+  /** Always empty: Send is blocked while there are Bcc recipients. Checked again when encrypting. */
   bcc: MimeAddress[];
+  /** Addresses whose key would identify the sender, beyond `from`: the identity's own address. */
+  ownAddresses?: string[];
   subject: string;
   inReplyTo?: string[];
   references?: string[];
   delayedUntil?: string;
   requireTls?: boolean;
+  /** RFC 3461 delivery status notifications, as for a normal send. */
+  requestDsn?: boolean;
+  /** RFC 8098 read receipt: written as Disposition-Notification-To in the cleartext headers. */
+  requestReadReceipt?: boolean;
+  /** Connected account that owns the identity, when it is not the active one (#461). */
+  localAccountId?: string;
 }
 
 type EditorStatus = 'starting' | 'ready' | 'error';
@@ -61,11 +87,11 @@ export function usePgpCompose(options: UsePgpComposeOptions) {
   const keyring = useMailvelopeStore((s) => s.keyring);
   const { dialogProps, confirm } = useConfirmDialog();
 
-  const [mode, setMode] = useState<PgpComposeMode>('off');
+  const [mode, setMode] = useState<PgpComposeMode>(options.initialMode ?? 'off');
   const [initialText, setInitialText] = useState('');
   const [editorStatus, setEditorStatus] = useState<EditorStatus>('starting');
   const editorRef = useRef<MailvelopeEditor | null>(null);
-  const activeRef = useRef(false);
+  const activeRef = useRef((options.initialMode ?? 'off') !== 'off');
 
   // Stays on if the extension disconnects mid-compose (it updated or was disabled):
   // dropping to the normal composer would show an empty editor while the text
@@ -148,7 +174,24 @@ export function usePgpCompose(options: UsePgpComposeOptions) {
   const onEditor = useCallback((editor: MailvelopeEditor | null) => {
     editorRef.current = editor;
     setEditorStatus(editor ? 'ready' : 'starting');
+    // The carried-over text is in the editor now and is the user's to change
+    // there. Any later restart (the extension disconnecting and coming back)
+    // must not put that first version back as if it were what they wrote.
+    if (editor) setInitialText('');
   }, []);
+
+  // The extension went away and came back: its editor restarts empty, and what
+  // was typed in the old one is gone. Say so, rather than let the empty editor
+  // pass for the message.
+  const wasDisconnectedRef = useRef(false);
+  useEffect(() => {
+    if (disconnected) {
+      wasDisconnectedRef.current = true;
+    } else if (wasDisconnectedRef.current && active) {
+      wasDisconnectedRef.current = false;
+      toast.info(t('editor_restarted'));
+    }
+  }, [disconnected, active, t]);
 
   const onEditorError = useCallback(
     (err: unknown) => {
@@ -196,7 +239,10 @@ export function usePgpCompose(options: UsePgpComposeOptions) {
     if (disconnected) sendBlockedReason = t('error_disconnected');
     else if (editorStatus === 'error') sendBlockedReason = t('editor_failed_short');
     else if (editorStatus !== 'ready') sendBlockedReason = t('editor_not_ready');
-    else if (keyStatus.checking) sendBlockedReason = t('recipients_checking');
+    else if (options.hasBcc) sendBlockedReason = t('send_blocked_bcc');
+    else if (options.uncommittedRecipients.length > 0) {
+      sendBlockedReason = t('send_blocked_uncommitted', { addresses: options.uncommittedRecipients.join(', ') });
+    } else if (keyStatus.checking) sendBlockedReason = t('recipients_checking');
     else if (missing.length > 0) {
       sendBlockedReason = t('send_blocked_missing', { addresses: missing.map((s) => s.address).join(', ') });
     } else if (keyStatus.failed.length > 0) sendBlockedReason = t('send_blocked_failed');
@@ -221,14 +267,21 @@ export function usePgpCompose(options: UsePgpComposeOptions) {
           to: params.to,
           cc: params.cc,
           bcc: params.bcc,
+          ownAddresses: params.ownAddresses,
           subject: params.subject,
           inReplyTo: params.inReplyTo,
           references: params.references,
+          requestReadReceipt: params.requestReadReceipt,
         });
         const blob = new Blob([raw], { type: 'message/rfc822' });
         return await useEmailStore
           .getState()
-          .sendRawEmail(params.client, blob, params.identityId, params.delayedUntil, envelopeRecipients, { isPgp: true, ...(params.requireTls ? { requireTls: true } : {}) });
+          .sendRawEmail(params.client, blob, params.identityId, params.delayedUntil, envelopeRecipients, {
+            isPgp: true,
+            ...(params.requireTls ? { requireTls: true } : {}),
+            ...(params.requestDsn ? { requestDsn: true } : {}),
+            ...(params.localAccountId ? { localAccountId: params.localAccountId } : {}),
+          });
       } catch (err) {
         // Mailvelope errors carry a code, and so do the address ones raised
         // before encrypting; anything else (network, server) is shown as is.

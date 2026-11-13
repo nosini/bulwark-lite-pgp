@@ -1,21 +1,37 @@
 diff --git a/components/email/message-actions.ts b/components/email/message-actions.ts
-index fdfa78da4..7b4746026 100644
+index fdfa78da4..7436414fb 100644
 --- a/components/email/message-actions.ts
 +++ b/components/email/message-actions.ts
-@@ -193,7 +193,7 @@ export function useMessageActionList(o: MessageActionOptions): MessageActionEntr
+@@ -9,6 +9,7 @@ import { buildMailPath } from "@/lib/deep-links";
+ import { useCopyLink } from "@/hooks/use-copy-link";
+ import { usePhishingReport } from "@/hooks/use-phishing-report";
+ import type { Email } from "@/lib/jmap/types";
++import { isScheduledComposeAgainOnly } from "@/lib/compose-reopen";
+ import {
+   Reply,
+   ReplyAll,
+@@ -193,7 +194,7 @@ export function useMessageActionList(o: MessageActionOptions): MessageActionEntr
            item(
              "cancel_and_edit",
              Pencil,
 -            email.isSmimeScheduled ? t("cancel_and_compose_again") : t("cancel_and_edit"),
-+            email.isSmimeScheduled || email.isPgpScheduled ? t("cancel_and_compose_again") : t("cancel_and_edit"),
++            isScheduledComposeAgainOnly(email) ? t("cancel_and_compose_again") : t("cancel_and_edit"),
              o.onCancelScheduledForEdit,
            ),
            // Back into Drafts. An S/MIME message can't go back (it is
 diff --git a/components/mail/mail-app.tsx b/components/mail/mail-app.tsx
-index c69d7c2c7..23b68badd 100644
+index c69d7c2c7..54065f5f7 100644
 --- a/components/mail/mail-app.tsx
 +++ b/components/mail/mail-app.tsx
-@@ -2190,6 +2190,8 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+@@ -96,6 +96,7 @@ import { FilterPanelHost } from "@/components/search/filter-panel-host";
+ import { SearchFilterPanel, SELECT_CLASS } from "@/components/search/search-filter-panel";
+ import type { ContactSuggestion } from "@/lib/search-suggestions";
+ import type { Attachment, SendEmailResult } from "@/lib/jmap/types";
++import { isScheduledComposeAgainOnly, isUneditableDraft } from "@/lib/compose-reopen";
+ import type { IJMAPClient } from "@/lib/jmap/client-interface";
+ import { peekListAttachments, requestListAttachments, type ListAttachmentSource, type LoadListAttachments } from "@/lib/list-attachments";
+ import { useSearchHistoryStore } from "@/stores/search-history-store";
+@@ -2190,6 +2191,8 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
      headers?: Record<string, string>;
      labelHeaders?: Record<string, string>;
      composerId?: string;
@@ -24,7 +40,7 @@ index c69d7c2c7..23b68badd 100644
    }) => {
      // Nothing is sent: the composer keeps what only goes once the mail is out.
      if (!client) return false;
-@@ -2213,7 +2215,9 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+@@ -2213,7 +2216,9 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
        const effectiveMode = pendingDraft?.mode ?? composerMode;
        const originalEmailId = composerSourceEmail?.id;
  
@@ -35,17 +51,36 @@ index c69d7c2c7..23b68badd 100644
        submitted = true;
        announceSent(result, data);
        setShowComposer(false);
-@@ -2694,6 +2698,9 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+@@ -2466,6 +2471,13 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+       draft = { ...fullDraft, sourceClientAccountId: draft.sourceClientAccountId, sourceAccountId: draft.sourceAccountId };
+     }
+ 
++    // An encrypted message (an undone PGP send is kept in Drafts) would open as
++    // an empty body with the original recipients, and send as plaintext.
++    if (isUneditableDraft(draft)) {
++      toast.info(t('pgp.draft_not_editable'));
++      return;
++    }
++
+     draft = await emailHooks.onBeforeEditDraft.transform(draft);
+ 
+     const { body: draftBody, bodyText, plainTextMode: draftPlainTextMode } = getDraftComposerBody(draft);
+@@ -2690,10 +2702,13 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+             try {
+               // Never left the server: plugins don't hear about it.
+               cancelAnnouncedSend(pending.submissionId);
+-              if (restored && !pending.isSmime) {
++              if (restored && pending.onUndo === 'reopen') {
                  // Back in the Drafts of the account it was sent from, through
                  // the login that sent it.
                  await handleEditDraft(restored, { accountId: pending.submissionAccountId, localAccountId: undoLogin });
-+              } else if (pending.isPgp) {
++              } else if (pending.onUndo === 'keep') {
 +                // The composer cannot reopen ciphertext, so say where it went.
 +                toast.success(t('pgp.undo_kept_draft'));
                }
                if (isScheduledView) await fetchScheduledEmails(client);
              } catch (error) {
-@@ -4624,6 +4631,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+@@ -4624,6 +4639,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
            fullEmail.scheduledAccountId = listEmail.scheduledAccountId;
            fullEmail.isScheduled = true;
            fullEmail.isSmimeScheduled = listEmail.isSmimeScheduled;
@@ -53,7 +88,7 @@ index c69d7c2c7..23b68badd 100644
          }
          // Re-stamp the source reference so later actions on the open email
          // resolve to the right account (the fetched object lacks these).
-@@ -4813,6 +4821,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+@@ -4813,6 +4829,7 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
        }}
      >
        <EmailComposer
@@ -61,25 +96,49 @@ index c69d7c2c7..23b68badd 100644
          key={composerSessionId}
          mode={pendingDraft?.mode ?? composerMode}
          composeFromAccountEmail={resolveComposeAccountEmail(
-@@ -5348,7 +5357,9 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+@@ -5348,7 +5365,9 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
                    // The context menu does not wait for this; report here.
                    const restored = await cancelScheduledForEdit(email);
                    if (restored === undefined) return;
 -                  if (email.isSmimeScheduled) {
-+                  if (email.isSmimeScheduled || email.isPgpScheduled) {
++                  if (isScheduledComposeAgainOnly(email)) {
 +                    // Neither can be reopened for editing; start a fresh message.
 +                    if (email.isPgpScheduled) toast.success(t('pgp.undo_kept_draft'));
                      setComposerMode('compose');
                      setPendingDraft(null);
                    } else if (restored) {
-@@ -5720,7 +5731,9 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
+@@ -5720,7 +5739,9 @@ export function MailApp({ linkSegments: routeSegments }: MailAppProps = {}) {
                        // The button does not wait for this; report here.
                        const restored = await cancelScheduledForEdit(selectedEmail);
                        if (restored === undefined) return;
 -                      if (selectedEmail.isSmimeScheduled) {
-+                      if (selectedEmail.isSmimeScheduled || selectedEmail.isPgpScheduled) {
++                      if (isScheduledComposeAgainOnly(selectedEmail)) {
 +                        // Neither can be reopened for editing; start a fresh message.
 +                        if (selectedEmail.isPgpScheduled) toast.success(t('pgp.undo_kept_draft'));
                          setComposerMode('compose');
                          setShowComposer(true);
                          return;
+diff --git a/components/pro/pro-email-tab-body.tsx b/components/pro/pro-email-tab-body.tsx
+index 6040ba126..29ba33fc9 100644
+--- a/components/pro/pro-email-tab-body.tsx
++++ b/components/pro/pro-email-tab-body.tsx
+@@ -16,6 +16,7 @@ import { useProTabStore, type ProComposeTabData, type ProEmailTabData, type ProR
+ import { emailHooks } from "@/lib/plugin-hooks";
+ import { composeOptionsFor, runBeforeCompose, type ComposePrefill } from "@/lib/plugin-compose-gate";
+ import type { Email } from "@/lib/jmap/types";
++import { isUneditableDraft } from "@/lib/compose-reopen";
+ import type { IJMAPClient } from "@/lib/jmap/client-interface";
+ import { buildReplySubject, buildForwardSubject } from "@/lib/subject-prefix";
+ import { getQuoteBodies } from "@/lib/email-composer-utils";
+@@ -460,6 +461,11 @@ export function ProEmailView({ emailId, client: clientOverride, clientAccountId,
+ 
+   const handleEditDraft = useCallback(() => {
+     if (!email) return;
++    // Encrypted: it would open as an empty body and send as plaintext.
++    if (isUneditableDraft(email)) {
++      toast.info(t('pgp.draft_not_editable'));
++      return;
++    }
+ 
+     const { body, bodyText, plainTextMode } = getDraftComposerBody(email);
+ 

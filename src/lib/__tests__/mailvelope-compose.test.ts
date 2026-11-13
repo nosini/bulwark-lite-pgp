@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 import { encryptAndBuildMessage, pgpErrorMessageKey } from '@/lib/mailvelope/compose';
-import { bareAddress, checkRecipientKeys, classifyKeyMap, importRecipientKey, uniqueAddresses } from '@/lib/mailvelope/recipients';
+import { bareAddress, checkRecipientKeys, classifyKeyMap, envelopeAddresses, importRecipientKey, uniqueAddresses } from '@/lib/mailvelope/recipients';
 import type { MailvelopeEditor, MailvelopeKeyMap, MailvelopeKeyring, MailvelopeLookupResult } from '@/lib/mailvelope/types';
 
 const ARMOR = ['-----BEGIN PGP MESSAGE-----', '', 'hQEMA1Vn7c1u8bVh', '=AbCd', '-----END PGP MESSAGE-----'].join('\n');
@@ -29,6 +29,10 @@ describe('recipient key resolution', () => {
     expect(bareAddress('"Doe, Jane" <Jane@Example.COM>')).toBe('jane@example.com');
     expect(bareAddress(' a@b.c ')).toBe('a@b.c');
     expect(uniqueAddresses(['A@b.c', 'Name <a@b.c>', 'x@y.z'])).toEqual(['a@b.c', 'x@y.z']);
+  });
+
+  it('de-duplicates envelope addresses without changing their case', () => {
+    expect(envelopeAddresses(['John.Doe@X.org', 'Name <john.doe@x.org>', ' y@Z.org '])).toEqual(['John.Doe@X.org', 'y@Z.org']);
   });
 
   it('classifies ready, importable and missing recipients', () => {
@@ -86,18 +90,46 @@ describe('encryptAndBuildMessage', () => {
     from: { name: 'Me', email: 'me@example.com' },
     to: [{ email: 'to@example.org' }],
     cc: [{ email: 'cc@example.org' }],
-    bcc: [{ email: 'hidden@example.net' }],
+    bcc: [] as { email: string }[],
     subject: 'Plans',
   });
 
-  it('wraps the ciphertext as PGP/MIME and lists every recipient, Bcc included, in the envelope only', async () => {
+  it('wraps the ciphertext as PGP/MIME and lists every recipient in the envelope', async () => {
     const ed = editor(ARMOR);
     const { raw, envelopeRecipients } = await encryptAndBuildMessage(input(ed, fakeKeyring({})));
-    expect(envelopeRecipients).toEqual(['to@example.org', 'cc@example.org', 'hidden@example.net']);
+    expect(envelopeRecipients).toEqual(['to@example.org', 'cc@example.org']);
     expect(raw).toContain('multipart/encrypted');
     expect(raw).toContain(ARMOR.replace(/\n/g, '\r\n'));
-    expect(raw).not.toContain('hidden@example.net');
-    expect(raw).not.toMatch(/^bcc:/im);
+    expect(raw).not.toMatch(/^disposition-notification-to:/im);
+  });
+
+  // One message carries a session-key packet per recipient key, so Bcc
+  // recipients would be identifiable by everyone else.
+  it('refuses Bcc recipients before encrypting', async () => {
+    const ed = editor(ARMOR);
+    await expect(
+      encryptAndBuildMessage({ ...input(ed, fakeKeyring({})), bcc: [{ email: 'hidden@example.net' }] }),
+    ).rejects.toMatchObject({ code: 'BULWARK_BCC_UNSUPPORTED' });
+    expect(ed.encrypt).not.toHaveBeenCalled();
+    expect(pgpErrorMessageKey({ code: 'BULWARK_BCC_UNSUPPORTED' })).toBe('send_blocked_bcc');
+  });
+
+  it('keeps the case of envelope recipients, whose local parts a server may treat as case-sensitive', async () => {
+    const ed = editor(ARMOR);
+    const { envelopeRecipients, raw } = await encryptAndBuildMessage({
+      ...input(ed, fakeKeyring({})),
+      to: [{ email: 'John.Doe@Legacy.example' }, { email: 'john.doe@legacy.example' }],
+      cc: [],
+    });
+    expect(envelopeRecipients).toEqual(['John.Doe@Legacy.example']);
+    expect(raw).toContain('John.Doe@Legacy.example');
+    // Key lookup is case-insensitive in Mailvelope; one target per address.
+    expect(ed.encrypt).toHaveBeenCalledWith(['john.doe@legacy.example']);
+  });
+
+  it('asks for a read receipt in the cleartext headers when requested', async () => {
+    const { raw } = await encryptAndBuildMessage({ ...input(editor(ARMOR), fakeKeyring({})), requestReadReceipt: true });
+    expect(raw).toContain('\r\nDisposition-Notification-To: me@example.com\r\n');
   });
 
   // Checking this after encrypting means the user answers the passphrase
@@ -105,8 +137,6 @@ describe('encryptAndBuildMessage', () => {
   it.each([
     ['a To address', { to: [{ email: 'jörg@example.org' }] }],
     ['a Cc address', { cc: [{ email: 'jörg@example.org' }] }],
-    // Bcc reaches no header, so only this check can catch it.
-    ['a Bcc address', { bcc: [{ email: 'jörg@example.org' }] }],
     ['the sender', { from: { email: 'jörg@example.org' } }],
   ])('rejects a non-ASCII %s without encrypting', async (_label, override) => {
     const ed = editor(ARMOR);
@@ -133,13 +163,32 @@ describe('encryptAndBuildMessage', () => {
   it('encrypts to the sender as well when their key is in the local keyring', async () => {
     const ed = editor(ARMOR);
     await encryptAndBuildMessage(input(ed, fakeKeyring({ 'me@example.com': { keys: [key('LOC')] } })));
-    expect(ed.encrypt).toHaveBeenCalledWith(['to@example.org', 'cc@example.org', 'hidden@example.net', 'me@example.com']);
+    expect(ed.encrypt).toHaveBeenCalledWith(['to@example.org', 'cc@example.org', 'me@example.com']);
+  });
+
+  it('finds the sender key behind a sub-address', async () => {
+    const ed = editor(ARMOR);
+    await encryptAndBuildMessage({
+      ...input(ed, fakeKeyring({ 'me@example.com': { keys: [key('LOC')] } })),
+      from: { email: 'me+orders@example.com' },
+    });
+    expect(ed.encrypt).toHaveBeenCalledWith(['to@example.org', 'cc@example.org', 'me@example.com']);
+  });
+
+  it('falls back to the identity address when the From override has no key', async () => {
+    const ed = editor(ARMOR);
+    await encryptAndBuildMessage({
+      ...input(ed, fakeKeyring({ 'me@example.com': { keys: [key('LOC')] } })),
+      from: { email: 'alias@other.example' },
+      ownAddresses: ['Me@Example.com'],
+    });
+    expect(ed.encrypt).toHaveBeenCalledWith(['to@example.org', 'cc@example.org', 'me@example.com']);
   });
 
   it('leaves the sender out when they have no local key, so encryption cannot fail on it', async () => {
     const ed = editor(ARMOR);
     await encryptAndBuildMessage(input(ed, fakeKeyring({ 'me@example.com': { keys: [key('WKD', 'A')] } })));
-    expect(ed.encrypt).toHaveBeenCalledWith(['to@example.org', 'cc@example.org', 'hidden@example.net']);
+    expect(ed.encrypt).toHaveBeenCalledWith(['to@example.org', 'cc@example.org']);
   });
 
   it('does not list the sender twice when they write to themselves', async () => {

@@ -79,4 +79,54 @@ describe('useRecipientKeyStatus', () => {
     expect(result.current.checking).toBe(false);
     expect(result.current.statuses.map((s) => s.address)).toEqual(['alice@example.com', 'bob@example.org']);
   });
+  it('does not ask again about an address whose answer is still in flight', async () => {
+    let release: (map: MailvelopeKeyMap) => void = () => {};
+    const keyring = keyringWith((addresses) => {
+      if (addresses.includes('alice@a.org')) return new Promise((r) => { release = r; });
+      return noKeys(addresses);
+    });
+
+    const { result, rerender } = renderHook(({ to }) => useRecipientKeyStatus(true, keyring, to), {
+      initialProps: { to: ['alice@a.org'] },
+    });
+    await settle();
+
+    // bob is added, and his debounce fires, while alice's slow lookup is pending.
+    rerender({ to: ['alice@a.org', 'bob@b.org'] });
+    await settle();
+    const asked = () => (keyring.validKeyForAddress as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
+    expect(asked()).toEqual([['alice@a.org'], ['bob@b.org']]);
+    // alice is still unresolved, so Send must stay blocked.
+    expect(result.current.checking).toBe(true);
+
+    await act(async () => {
+      release({ 'alice@a.org': false });
+      await Promise.resolve();
+    });
+    await settle();
+    expect(asked()).toHaveLength(2);
+    expect(result.current.checking).toBe(false);
+    expect(result.current.failed).toEqual([]);
+  });
+
+  it('asks again after refresh even if an older answer was still in flight', async () => {
+    let release: (map: MailvelopeKeyMap) => void = () => {};
+    let calls = 0;
+    const keyring = keyringWith((addresses) => {
+      calls++;
+      if (calls === 1) return new Promise((r) => { release = r; });
+      return Promise.resolve(Object.fromEntries(addresses.map((a) => [a, { keys: [{ fingerprint: 'f', lastModified: new Date(0), source: 'LOC' }] }])) as MailvelopeKeyMap);
+    });
+    const { result } = renderHook(() => useRecipientKeyStatus(true, keyring, ['carol@c.org']));
+    await settle();
+    act(() => result.current.refresh('carol@c.org'));
+    await settle();
+    // The stale "no key" arrives after the refreshed answer and must not replace it.
+    await act(async () => {
+      release({ 'carol@c.org': false });
+      await Promise.resolve();
+    });
+    await settle();
+    expect(result.current.statuses).toEqual([expect.objectContaining({ address: 'carol@c.org', state: 'ready' })]);
+  });
 });

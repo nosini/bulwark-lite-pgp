@@ -105,6 +105,11 @@ export function MailvelopeDisplay({ source, senderAddress, fetchBlob, onShowOrig
           {t('display_show_original')}
         </Button>
       </div>
+      {source.kind === 'inline' && source.hasOtherText && phase !== 'failed' && (
+        <p className="text-xs text-muted-foreground" data-testid="pgp-display-other-text">
+          {t('display_other_text')}
+        </p>
+      )}
       <div
         ref={containerRef}
         hidden={phase === 'failed'}

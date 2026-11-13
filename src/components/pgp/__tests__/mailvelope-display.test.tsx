@@ -32,7 +32,7 @@ describe('MailvelopeDisplay', () => {
   it('opens an inline PGP message with the armored block, the keyring and the sender', async () => {
     render(
       <MailvelopeDisplay
-        source={{ kind: 'inline', armored: ARMOR }}
+        source={{ kind: 'inline', armored: ARMOR, hasOtherText: false }}
         senderAddress="alice@example.com"
         fetchBlob={vi.fn()}
         onShowOriginal={vi.fn()}
@@ -46,6 +46,17 @@ describe('MailvelopeDisplay', () => {
     expect(keyring).toEqual({ identifier: 'k' });
     expect(options).toEqual({ senderAddress: 'alice@example.com' });
     expect(await screen.findByText('display_note')).toBeInTheDocument();
+  });
+
+  it('says when the message has unencrypted text that the frame does not show', async () => {
+    const view = render(
+      <MailvelopeDisplay source={{ kind: 'inline', armored: ARMOR, hasOtherText: true }} fetchBlob={vi.fn()} onShowOriginal={vi.fn()} />,
+    );
+    expect(await screen.findByTestId('pgp-display-other-text')).toHaveTextContent('display_other_text');
+    view.unmount();
+    render(<MailvelopeDisplay source={{ kind: 'inline', armored: ARMOR, hasOtherText: false }} fetchBlob={vi.fn()} onShowOriginal={vi.fn()} />);
+    await screen.findByText('display_note');
+    expect(screen.queryByTestId('pgp-display-other-text')).toBeNull();
   });
 
   it('fetches the PGP/MIME payload blob and passes Mailvelope only the armored ciphertext, never the MIME wrapper', async () => {
@@ -69,7 +80,7 @@ describe('MailvelopeDisplay', () => {
     // would run for as long as the message stayed open.
     const never = new Promise<never>(() => {});
     mv.createDisplayContainer.mockReturnValue(never);
-    render(<MailvelopeDisplay source={{ kind: 'inline', armored: ARMOR }} fetchBlob={vi.fn()} onShowOriginal={vi.fn()} />);
+    render(<MailvelopeDisplay source={{ kind: 'inline', armored: ARMOR, hasOtherText: false }} fetchBlob={vi.fn()} onShowOriginal={vi.fn()} />);
     expect(await screen.findByText('display_loading')).toBeInTheDocument();
 
     fireEvent(document, Object.assign(new Event('securitypolicyviolation'), {
@@ -87,25 +98,25 @@ describe('MailvelopeDisplay', () => {
 
   it('shows the failure state when Mailvelope cannot parse the armor', async () => {
     mv.createDisplayContainer.mockResolvedValue({ error: Object.assign(new Error('bad'), { code: 'ARMOR_PARSE_ERROR' }) });
-    render(<MailvelopeDisplay source={{ kind: 'inline', armored: ARMOR }} fetchBlob={vi.fn()} onShowOriginal={vi.fn()} />);
+    render(<MailvelopeDisplay source={{ kind: 'inline', armored: ARMOR, hasOtherText: false }} fetchBlob={vi.fn()} onShowOriginal={vi.fn()} />);
     expect(await screen.findByText('display_failed')).toBeInTheDocument();
   });
 
   it('leaves errors like a missing private key to Mailvelope’s own frame', async () => {
     mv.createDisplayContainer.mockResolvedValue({ error: Object.assign(new Error('no key'), { code: 'NO_KEY_FOUND' }) });
-    render(<MailvelopeDisplay source={{ kind: 'inline', armored: ARMOR }} fetchBlob={vi.fn()} onShowOriginal={vi.fn()} />);
+    render(<MailvelopeDisplay source={{ kind: 'inline', armored: ARMOR, hasOtherText: false }} fetchBlob={vi.fn()} onShowOriginal={vi.fn()} />);
     expect(await screen.findByText('display_note')).toBeInTheDocument();
   });
 
   it('offers the original message', async () => {
     const onShowOriginal = vi.fn();
-    render(<MailvelopeDisplay source={{ kind: 'inline', armored: ARMOR }} fetchBlob={vi.fn()} onShowOriginal={onShowOriginal} />);
+    render(<MailvelopeDisplay source={{ kind: 'inline', armored: ARMOR, hasOtherText: false }} fetchBlob={vi.fn()} onShowOriginal={onShowOriginal} />);
     fireEvent.click(await screen.findByText('display_show_original'));
     expect(onShowOriginal).toHaveBeenCalledTimes(1);
   });
 
   it('removes its host element on unmount, so a late injection finds nothing', async () => {
-    const view = render(<MailvelopeDisplay source={{ kind: 'inline', armored: ARMOR }} fetchBlob={vi.fn()} onShowOriginal={vi.fn()} />);
+    const view = render(<MailvelopeDisplay source={{ kind: 'inline', armored: ARMOR, hasOtherText: false }} fetchBlob={vi.fn()} onShowOriginal={vi.fn()} />);
     await waitFor(() => expect(mv.createDisplayContainer).toHaveBeenCalled());
     const selector = mv.createDisplayContainer.mock.calls[0][0];
     expect(document.querySelector(selector)).not.toBeNull();
@@ -114,7 +125,7 @@ describe('MailvelopeDisplay', () => {
   });
 
   it('does not restart decryption when only the parent re-renders', async () => {
-    const source: PgpMessageSource = { kind: 'inline', armored: ARMOR };
+    const source: PgpMessageSource = { kind: 'inline', armored: ARMOR, hasOtherText: false };
     const view = render(<MailvelopeDisplay source={source} fetchBlob={vi.fn()} onShowOriginal={vi.fn()} />);
     await waitFor(() => expect(mv.createDisplayContainer).toHaveBeenCalledTimes(1));
     view.rerender(<MailvelopeDisplay source={source} fetchBlob={vi.fn()} onShowOriginal={vi.fn()} />);

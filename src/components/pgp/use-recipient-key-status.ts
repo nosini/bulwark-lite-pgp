@@ -30,6 +30,12 @@ export function useRecipientKeyStatus(
 ): RecipientKeyStatusResult {
   const cacheRef = useRef(new Map<string, RecipientKeyStatus>());
   const failedRef = useRef(new Set<string>());
+  // Asked about and not answered yet: a slow WKD lookup must not be repeated
+  // just because the recipient list changed while it was running.
+  const inFlightRef = useRef(new Set<string>());
+  // Bumped by refresh, so an answer that was in flight before it cannot put
+  // back what the user just asked to check again.
+  const epochRef = useRef(0);
   // Bumped whenever the caches change, to re-render and re-run the effect.
   const [revision, setRevision] = useState(0);
 
@@ -47,19 +53,31 @@ export function useRecipientKeyStatus(
           address &&
           isLookupCandidate(address) &&
           !cacheRef.current.has(address) &&
-          !failedRef.current.has(address),
+          !failedRef.current.has(address) &&
+          !inFlightRef.current.has(address),
       );
     if (unresolved.length === 0) return;
 
     const timer = setTimeout(async () => {
+      const epoch = epochRef.current;
+      for (const address of unresolved) inFlightRef.current.add(address);
       try {
         const results = await checkRecipientKeys(keyring, unresolved);
         // Kept even when this run was superseded by an edit to the recipients.
         // The answers are per address and still true; dropping them meant
         // looking the same addresses up again.
-        for (const status of results) cacheRef.current.set(status.address, status);
+        if (epoch === epochRef.current) {
+          for (const status of results) {
+            cacheRef.current.set(status.address, status);
+            failedRef.current.delete(status.address);
+          }
+        }
       } catch {
-        for (const address of unresolved) failedRef.current.add(address);
+        if (epoch === epochRef.current) {
+          for (const address of unresolved) if (!cacheRef.current.has(address)) failedRef.current.add(address);
+        }
+      } finally {
+        if (epoch === epochRef.current) for (const address of unresolved) inFlightRef.current.delete(address);
       }
       setRevision((r) => r + 1);
     }, DEBOUNCE_MS);
@@ -67,6 +85,9 @@ export function useRecipientKeyStatus(
   }, [enabled, keyring, addressKey, revision]);
 
   const refresh = useCallback((address?: string) => {
+    epochRef.current++;
+    // Answers still in flight are discarded, so those addresses are asked again.
+    inFlightRef.current.clear();
     if (address) {
       cacheRef.current.delete(address.toLowerCase());
       failedRef.current.delete(address.toLowerCase());
@@ -88,6 +109,6 @@ export function useRecipientKeyStatus(
     if (!isLookupCandidate(address)) return [{ address, state: 'missing', keys: [] }];
     return [];
   });
-  const failed = addresses.filter((address) => failedRef.current.has(address));
+  const failed = addresses.filter((address) => failedRef.current.has(address) && !cacheRef.current.has(address));
   return { statuses, checking: statuses.length + failed.length < addresses.length, failed, refresh };
 }

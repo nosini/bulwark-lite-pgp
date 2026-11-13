@@ -124,7 +124,7 @@ vi.mock('@/stores/settings-store', () => {
 vi.mock('@/stores/contact-store', () => {
   const state = {
     contacts: [],
-    getAutocomplete: async () => [],
+    getAutocomplete: () => [],
     addToTrustedSendersBook: async () => {},
   };
   const hook = (sel?: (s: typeof state) => unknown) =>
@@ -153,7 +153,11 @@ const mv = vi.hoisted(() => ({
   encrypt: vi.fn(),
   sendRawEmail: vi.fn(),
   validKeyForAddress: vi.fn(),
+  /** initialText of every editor the composer started, in order. */
+  editorStarts: [] as string[],
 }));
+
+const toasts = vi.hoisted(() => ({ info: vi.fn(), error: vi.fn(), success: vi.fn() }));
 
 vi.mock('@/stores/mailvelope-store', () => {
   const keyring = {
@@ -164,7 +168,9 @@ vi.mock('@/stores/mailvelope-store', () => {
     exportOwnPublicKey: vi.fn(),
     openSettings: vi.fn(),
   };
-  const state = () => ({ status: 'ready', api: {}, keyring, version: '6.3.0', init: async () => {} });
+  // One api object, absent while the extension is: the editor restarts when it changes, as the real one does.
+  const api = {};
+  const state = () => ({ status: 'ready', api: mv.available ? api : null, keyring: mv.available ? keyring : null, version: '6.3.0', init: async () => {} });
   const hook = (sel?: (s: ReturnType<typeof state>) => unknown) => (typeof sel === 'function' ? sel(state()) : state());
   hook.getState = state;
   return {
@@ -176,20 +182,25 @@ vi.mock('@/stores/mailvelope-store', () => {
 
 vi.mock('@/components/pgp/mailvelope-editor', () => ({
   MailvelopeEditor: ({ signMsg, initialText, onEditor }: { signMsg: boolean; initialText?: string; onEditor: (e: unknown) => void }) => {
+    const connected = mv.available;
+    // Like the real one: initialText is read when the editor starts, and it
+    // restarts when signing changes or the extension comes back.
+    const initialTextRef = React.useRef(initialText);
+    initialTextRef.current = initialText;
     React.useEffect(() => {
+      if (!connected) return;
+      mv.editorStarts.push(initialTextRef.current ?? '');
       onEditor({ encrypt: (...a: unknown[]) => mv.encrypt(...a), createDraft: vi.fn() });
       return () => onEditor(null);
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [signMsg]);
-    return React.createElement('div', { 'data-testid': 'pgp-editor', 'data-initial-text': initialText ?? '', 'data-sign': String(signMsg) });
+    }, [signMsg, connected]);
+    return React.createElement('div', { 'data-testid': 'pgp-editor', 'data-sign': String(signMsg) });
   },
 }));
 
 // ─── Misc dependency mocks ────────────────────────────────────────────────────
 
-vi.mock('@/stores/toast-store', () => ({
-  toast: { info: () => {}, error: () => {}, success: () => {} },
-}));
+vi.mock('@/stores/toast-store', () => ({ toast: toasts }));
 
 vi.mock('@/lib/plugin-storage', () => ({ fileStorage: { saveFile: async () => {}, getFile: async () => null, deleteFile: async () => {} } }));
 
@@ -291,6 +302,10 @@ beforeEach(() => {
   hooks.onBeforeAttachmentUpload.mockReset().mockResolvedValue(true);
   mv.available = true;
   mv.hasKey = () => true;
+  mv.editorStarts = [];
+  toasts.info.mockReset();
+  toasts.error.mockReset();
+  toasts.success.mockReset();
   mv.encrypt.mockReset().mockResolvedValue(ARMOR);
   mv.sendRawEmail.mockReset().mockResolvedValue({ scheduled: false });
   mv.validKeyForAddress.mockReset().mockImplementation(async (addresses: string[]) =>
@@ -340,7 +355,8 @@ describe('turning PGP on', () => {
 
     expect(screen.queryByTestId('rich-text-editor')).not.toBeInTheDocument();
     const editor = screen.getByTestId('pgp-editor');
-    expect(editor.dataset.initialText).toContain('Still typing');
+    expect(mv.editorStarts).toHaveLength(1);
+    expect(mv.editorStarts[0]).toContain('Still typing');
     expect(editor.dataset.sign).toBe('false');
     expect(screen.getByText('banner_cleartext_notice')).toBeInTheDocument();
   });
@@ -539,20 +555,19 @@ describe('sending', () => {
     }
   });
 
-  it('keeps Bcc recipients in the envelope and out of the message', async () => {
+  // One OpenPGP message holds a session-key packet per recipient key, so every
+  // recipient could list the Bcc recipients' key ids.
+  it('blocks Send while there are Bcc recipients, and never encrypts to them', async () => {
     const onSend = vi.fn();
     render(<EmailComposer initialData={{ ...DRAFT, bcc: 'hidden@example.net', showBcc: true }} pgpSupported onSend={onSend} />);
     await enablePgp();
-    await waitFor(() => expect(sendButton()).not.toBeDisabled(), { timeout: 3000 });
+    await sleep(800);
+    expect(sendButton()).toBeDisabled();
     fireEvent.click(sendButton());
-    await waitFor(() => expect(onSend).toHaveBeenCalled());
-    await onSend.mock.calls[0][0].rawSend();
-
-    const [, blob, , , envelope] = mv.sendRawEmail.mock.calls[0];
-    expect(envelope).toEqual(['bob@example.com', 'hidden@example.net']);
-    expect(await readBlob(blob as Blob)).not.toContain('hidden@example.net');
-    // Encrypted to the Bcc recipient too, so they can read it.
-    expect(mv.encrypt.mock.calls[0][0]).toContain('hidden@example.net');
+    await sleep(50);
+    expect(onSend).not.toHaveBeenCalled();
+    expect(mv.encrypt).not.toHaveBeenCalled();
+    expect(sendButton()).toHaveAttribute('title', 'send_blocked_bcc');
   });
 
   it('blocks Send while a recipient has no key, and says which one', async () => {
@@ -633,10 +648,10 @@ describe('additional review reproductions', () => {
     expect(mv.sendRawEmail.mock.calls[0][5]).toEqual({ isPgp: true, requireTls: true });
   });
 
-  it('keeps PGP subject and Bcc out of plugin send hooks', async () => {
+  it('keeps PGP subject and recipients out of plugin send hooks', async () => {
     hooks.onBeforeEmailSend.mockClear();
     const onSend = vi.fn();
-    render(<EmailComposer initialData={{ ...DRAFT, subject: 'Confidential acquisition', bcc: 'hidden@example.net', showBcc: true }} pgpSupported onSend={onSend} />);
+    render(<EmailComposer initialData={{ ...DRAFT, subject: 'Confidential acquisition', cc: 'other@example.net', showCc: true }} pgpSupported onSend={onSend} />);
     await enablePgp();
     await waitFor(() => expect(sendButton()).not.toBeDisabled(), { timeout: 3000 });
     fireEvent.click(sendButton());
@@ -687,5 +702,131 @@ describe('PGP guard lifecycle', () => {
     fireEvent.click(sendButton());
     await waitFor(() => expect(hooks.onBeforeEmailSend).toHaveBeenCalled());
     expect(onSend).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('leaving the composer while encrypting', () => {
+  it('comes back encrypted, with an empty editor and a notice, instead of as a plaintext composer', async () => {
+    const onSaveState = vi.fn();
+    const view = render(<EmailComposer initialData={DRAFT} pgpSupported onSaveState={onSaveState} />);
+    await enablePgp();
+
+    // What clicking another message in the list does: the composer unmounts.
+    view.unmount();
+    expect(onSaveState).toHaveBeenCalledTimes(1);
+    const stashed = onSaveState.mock.calls[0][0];
+    expect(stashed.pgpMode).toBe('encrypt');
+    expect(stashed.body).toBe('');
+    expect(toasts.info).toHaveBeenCalledWith('pgp_suspended_text_lost');
+
+    // The host reopens it from the stash.
+    mv.editorStarts = [];
+    const onSend = vi.fn();
+    render(<EmailComposer initialData={stashed} pgpSupported onSend={onSend} />);
+    expect(screen.getByTestId('composer-pgp-banner')).toBeInTheDocument();
+    expect(screen.getByTestId('pgp-editor')).toBeInTheDocument();
+    expect(screen.queryByTestId('rich-text-editor')).not.toBeInTheDocument();
+    expect(mv.editorStarts).toEqual(['']);
+
+    // And it still sends only ciphertext.
+    await waitFor(() => expect(sendButton()).not.toBeDisabled(), { timeout: 3000 });
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(onSend).toHaveBeenCalled());
+    expect(onSend.mock.calls[0][0].body).toBe('');
+    expect(typeof onSend.mock.calls[0][0].rawSend).toBe('function');
+  });
+
+  it('does not mark a plaintext stash as encrypted', () => {
+    const onSaveState = vi.fn();
+    const view = render(<EmailComposer initialData={DRAFT} pgpSupported onSaveState={onSaveState} />);
+    fireEvent.change(screen.getByDisplayValue('Plans'), { target: { value: 'Plans v2' } });
+    view.unmount();
+    expect(onSaveState.mock.calls[0][0].pgpMode).toBeUndefined();
+    expect(toasts.info).not.toHaveBeenCalledWith('pgp_suspended_text_lost');
+  });
+
+  it('does not claim the text was lost when the host closes the composer during a send', async () => {
+    let finishSend: () => void = () => {};
+    // What the host does after a send: close the composer while `onSend` is
+    // still waiting on the server.
+    const onSend = vi.fn(() => {
+      view.unmount();
+      return new Promise<void>(resolve => { finishSend = resolve; });
+    });
+    const view = render(<EmailComposer initialData={DRAFT} pgpSupported onSend={onSend} onSaveState={vi.fn()} />);
+    await enablePgp();
+    await waitFor(() => expect(sendButton()).not.toBeDisabled(), { timeout: 3000 });
+
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(1));
+    finishSend();
+    expect(toasts.info).not.toHaveBeenCalledWith('pgp_suspended_text_lost');
+  });
+});
+
+describe('extension reconnect mid-compose', () => {
+  it('restarts the editor empty, not with the text carried in when encryption started, and says so', async () => {
+    const view = render(<EmailComposer initialData={DRAFT} pgpSupported />);
+    await enablePgp();
+    expect(mv.editorStarts).toHaveLength(1);
+    expect(mv.editorStarts[0]).toContain('Still typing');
+
+    mv.available = false;
+    view.rerender(<EmailComposer initialData={DRAFT} pgpSupported />);
+    await screen.findByRole('alert');
+    mv.available = true;
+    view.rerender(<EmailComposer initialData={DRAFT} pgpSupported />);
+
+    await waitFor(() => expect(mv.editorStarts).toHaveLength(2));
+    expect(mv.editorStarts[1]).toBe('');
+    expect(toasts.info).toHaveBeenCalledWith('editor_restarted');
+  });
+});
+
+describe('recipients still being typed', () => {
+  it('are not looked up, and block Send until they are committed', async () => {
+    const onSend = vi.fn();
+    render(<EmailComposer initialData={DRAFT} pgpSupported onSend={onSend} />);
+    await enablePgp();
+    await waitFor(() => expect(sendButton()).not.toBeDisabled(), { timeout: 3000 });
+    mv.validKeyForAddress.mockClear();
+
+    // A pause at "carol@example.co" on the way to ".com".
+    const input = screen.getByTestId('composer-to').querySelector('input')!;
+    fireEvent.change(input, { target: { value: 'carol@example.co' } });
+    await sleep(900);
+
+    const asked = mv.validKeyForAddress.mock.calls.flatMap((c) => c[0] as string[]);
+    expect(asked).not.toContain('carol@example.co');
+    expect(sendButton()).toBeDisabled();
+    expect(sendButton()).toHaveAttribute('title', 'send_blocked_uncommitted');
+
+    fireEvent.change(input, { target: { value: 'carol@example.com' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(mv.validKeyForAddress.mock.calls.flatMap((c) => c[0] as string[])).toContain('carol@example.com'), { timeout: 3000 });
+    await waitFor(() => expect(sendButton()).not.toBeDisabled(), { timeout: 3000 });
+  });
+});
+
+describe('send options with encryption', () => {
+  it('keeps the delivery-notification and read-receipt requests', async () => {
+    useAuthStore.setState({ client: { createDraft, deleteEmail, uploadBlob,
+      hasDelayedSend: () => false, getMaxDelayedSend: () => 0,
+      supportsSubmissionExtension: () => true } as never });
+    const onSend = vi.fn();
+    render(<EmailComposer initialData={DRAFT} pgpSupported onSend={onSend} />);
+    await enablePgp();
+    fireEvent.click(screen.getByTestId('composer-options-menu'));
+    fireEvent.click(screen.getByTestId('composer-dsn-toggle'));
+    fireEvent.click(screen.getByTestId('composer-read-receipt-toggle'));
+    await waitFor(() => expect(sendButton()).not.toBeDisabled(), { timeout: 3000 });
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(onSend).toHaveBeenCalled());
+    await onSend.mock.calls[0][0].rawSend();
+
+    expect(mv.sendRawEmail.mock.calls[0][5]).toMatchObject({ requestDsn: true });
+    const raw = await readBlob(mv.sendRawEmail.mock.calls[0][1] as Blob);
+    expect(raw).toContain('Disposition-Notification-To: me@example.com\r\n');
   });
 });

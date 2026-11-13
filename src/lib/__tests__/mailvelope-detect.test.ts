@@ -88,11 +88,30 @@ describe('detectPgpMessage: inline PGP', () => {
     email({ textBody: [part({ partId: '1' })], bodyValues: { '1': { value: text } }, ...over });
 
   it('finds an armored message inside a text/plain body', () => {
-    expect(detectPgpMessage(inline(`Hi\n\n${ARMOR}\n\n-- \nsig`))).toEqual({ kind: 'inline', armored: ARMOR });
+    expect(detectPgpMessage(inline(ARMOR))).toEqual({ kind: 'inline', armored: ARMOR, hasOtherText: false });
+    expect(detectPgpMessage(inline(`\n${ARMOR}\r\n\n`))).toEqual({ kind: 'inline', armored: ARMOR, hasOtherText: false });
   });
 
-  it('finds a cleartext-signed message', () => {
-    expect(detectPgpMessage(inline(SIGNED))).toEqual({ kind: 'inline', armored: SIGNED });
+  it('flags text outside the armored block, which Mailvelope does not show', () => {
+    expect(detectPgpMessage(inline(`Hi\n\n${ARMOR}\n\n-- \nsig`))).toEqual({ kind: 'inline', armored: ARMOR, hasOtherText: true });
+  });
+
+  // Mailvelope 6.3 throws WRONG_ARMORED_TYPE ("PGP signatures not supported")
+  // for these, and the frame would hide a body that is readable as it is.
+  it('leaves a cleartext-signed message to the normal rendering', () => {
+    expect(detectPgpMessage(inline(SIGNED))).toBeNull();
+    expect(detectPgpMessage(inline(`Announcement\n\n${SIGNED}\n`))).toBeNull();
+  });
+
+  it('ignores armor quoted in a reply', () => {
+    const quoted = ARMOR.split('\n').map((line) => `> ${line}`).join('\n');
+    expect(detectPgpMessage(inline(`My plaintext answer.\n\nOn Monday Bob wrote:\n${quoted}\n`))).toBeNull();
+    const nested = ARMOR.split('\n').map((line) => `>> ${line}`).join('\n');
+    expect(detectPgpMessage(inline(nested))).toBeNull();
+  });
+
+  it('ignores armor markers in the middle of a line', () => {
+    expect(detectPgpMessage(inline(`see: ${ARMOR}`))).toBeNull();
   });
 
   it('ignores a body that only mentions PGP', () => {
@@ -126,7 +145,7 @@ describe('armor helpers', () => {
   });
 
   it('extracts only the armored block from surrounding text', () => {
-    expect(extractInlineArmor(`> quoted\n${ARMOR}\ntrailer`)).toBe(ARMOR);
+    expect(extractInlineArmor(`> quoted\n${ARMOR}\ntrailer`)).toEqual({ armored: ARMOR, hasOtherText: true });
     expect(extractInlineArmor('no armor here')).toBeNull();
     expect(extractInlineArmor('')).toBeNull();
   });

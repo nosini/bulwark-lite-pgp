@@ -214,6 +214,53 @@ describe('mailvelope store', () => {
     expect(useMailvelopeStore.getState().api).toBe(api);
   });
 
+  it('detects once when the extension announces itself during the first detection window', async () => {
+    const init = useMailvelopeStore.getState().init();
+    await vi.advanceTimersByTimeAsync(100);
+
+    const api = fakeApi();
+    window.mailvelope = api;
+    window.dispatchEvent(new CustomEvent('mailvelope', { detail: api }));
+    await init;
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(useMailvelopeStore.getState().status).toBe('ready');
+    expect(api.getKeyring).toHaveBeenCalledTimes(1);
+    expect(api.getVersion).toHaveBeenCalledTimes(1);
+  });
+
+  it('stays ready when the announcement arrives without the global, instead of timing out later', async () => {
+    // The first run's own listener resolves with the event detail; a second
+    // run started beside it would find no window.mailvelope and give up after
+    // the timeout, overwriting "ready" with "unavailable".
+    const init = useMailvelopeStore.getState().init();
+    const api = fakeApi();
+    window.dispatchEvent(new CustomEvent('mailvelope', { detail: api }));
+    await init;
+    await vi.advanceTimersByTimeAsync(MAILVELOPE_DETECT_TIMEOUT_MS + 100);
+    expect(useMailvelopeStore.getState().status).toBe('ready');
+  });
+
+  it('lets only the latest run decide when a reconnect overtakes a slow one', async () => {
+    let failFirst!: (err: unknown) => void;
+    const first = fakeApi({ getKeyring: vi.fn(() => new Promise<MailvelopeKeyring>((_, reject) => { failFirst = reject; })) });
+    window.mailvelope = first;
+    const init = useMailvelopeStore.getState().init();
+    await vi.advanceTimersByTimeAsync(0);
+
+    // The extension reconnects while the first run still waits for its keyring.
+    const second = fakeApi();
+    window.mailvelope = second;
+    window.dispatchEvent(new CustomEvent('mailvelope', { detail: second }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(useMailvelopeStore.getState().status).toBe('ready');
+
+    failFirst(coded('NO_CONNECTION'));
+    await init;
+    expect(useMailvelopeStore.getState().status).toBe('ready');
+    expect(useMailvelopeStore.getState().api).toBe(second);
+  });
+
   it('ignores an announcement while it is already ready', async () => {
     const api = fakeApi();
     window.mailvelope = api;

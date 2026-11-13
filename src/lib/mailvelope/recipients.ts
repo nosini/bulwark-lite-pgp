@@ -25,6 +25,25 @@ export function uniqueAddresses(recipients: string[]): string[] {
 }
 
 /**
+ * Recipients for the SMTP envelope: deduplicated without regard to case, but
+ * each kept as written. RFC 5321 §2.4 lets a server treat local parts as
+ * case-sensitive, so `John.Doe@` must not become `john.doe@` in RCPT TO.
+ */
+export function envelopeAddresses(recipients: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const recipient of recipients) {
+    const angled = /<([^<>]+)>\s*$/.exec(recipient);
+    const address = (angled ? angled[1] : recipient).trim();
+    const key = address.toLowerCase();
+    if (!address || seen.has(key)) continue;
+    seen.add(key);
+    result.push(address);
+  }
+  return result;
+}
+
+/**
  * Whether an address is complete enough to look up. The composer treats what
  * is being typed in a recipient field as a recipient, and Mailvelope resolves
  * an address it has no local key for over WKD or a key server — so `bo`,

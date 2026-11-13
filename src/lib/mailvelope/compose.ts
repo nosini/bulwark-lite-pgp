@@ -1,5 +1,5 @@
 import { addrSpec, buildPgpMimeMessage, type MimeAddress } from './pgp-mime';
-import { bareAddress, uniqueAddresses } from './recipients';
+import { bareAddress, envelopeAddresses, uniqueAddresses } from './recipients';
 import type { MailvelopeEditor, MailvelopeError, MailvelopeKeyring } from './types';
 
 export interface EncryptedMessageInput {
@@ -8,17 +8,44 @@ export interface EncryptedMessageInput {
   from: MimeAddress;
   to: MimeAddress[];
   cc: MimeAddress[];
+  /**
+   * Must be empty. One OpenPGP message holds a session-key packet per recipient
+   * key, so a Bcc recipient's key id would be readable by everyone else; the
+   * composer blocks Send instead, and this refuses in case anything gets here.
+   */
   bcc: MimeAddress[];
+  /**
+   * More of the sender's own addresses to try for the Sent copy's key, after
+   * `from` and `from` without its sub-address tag: the identity's address when
+   * the From header carries an override.
+   */
+  ownAddresses?: string[];
   subject: string;
   inReplyTo?: string[];
   references?: string[];
+  /** Ask for a read receipt (RFC 8098 Disposition-Notification-To, to `from`). */
+  requestReadReceipt?: boolean;
 }
 
 export interface EncryptedMessage {
   /** Full RFC 822 message: the only thing that is ever uploaded. */
   raw: string;
-  /** Every To/Cc/Bcc address, for the SMTP envelope. Bcc never appears in `raw`. */
+  /** Every To/Cc address for the SMTP envelope, as written: local parts can be case-sensitive. */
   envelopeRecipients: string[];
+}
+
+/** Raised before encrypting when the message has Bcc recipients. */
+export class PgpBccError extends Error {
+  readonly code = 'BULWARK_BCC_UNSUPPORTED';
+  constructor() {
+    super('Refusing to encrypt with Bcc recipients: every recipient could see their key ids');
+    this.name = 'PgpBccError';
+  }
+}
+
+/** `me+tag@example.com` → `me@example.com`, for finding the key behind a sub-address. */
+function withoutSubAddress(address: string): string {
+  return address.replace(/^([^@+]+)\+[^@]*@/, '$1@');
 }
 
 /**
@@ -27,12 +54,17 @@ export interface EncryptedMessage {
  * cannot resolve would make the whole encryption fail, so this is checked
  * rather than assumed.
  */
-async function hasOwnKey(keyring: MailvelopeKeyring, address: string): Promise<boolean> {
+async function ownKeyAddress(keyring: MailvelopeKeyring, candidates: string[]): Promise<string | null> {
+  const addresses = uniqueAddresses(candidates);
+  if (addresses.length === 0) return null;
   try {
-    const entry = (await keyring.validKeyForAddress([address]))[address];
-    return entry ? entry.keys.some((key) => key.source === 'LOC') : false;
+    const keyMap = await keyring.validKeyForAddress(addresses);
+    return addresses.find((address) => {
+      const entry = keyMap[address];
+      return entry ? entry.keys.some((key) => key.source === 'LOC') : false;
+    }) ?? null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -46,15 +78,23 @@ export async function encryptAndBuildMessage(input: EncryptedMessageInput): Prom
   // the same address further down, once the user has already answered the
   // passphrase dialog and waited for a message that is then thrown away. Bcc
   // is checked here too — it reaches no header, only the SMTP envelope.
-  for (const { email } of [input.from, ...input.to, ...input.cc, ...input.bcc]) addrSpec(email);
+  if (input.bcc.length > 0) throw new PgpBccError();
+  for (const { email } of [input.from, ...input.to, ...input.cc]) addrSpec(email);
 
-  const envelopeRecipients = uniqueAddresses([...input.to, ...input.cc, ...input.bcc].map((a) => a.email));
+  const recipients = [...input.to, ...input.cc].map((a) => a.email);
+  const envelopeRecipients = envelopeAddresses(recipients);
+  // Key lookup is by address, which Mailvelope compares case-insensitively.
+  const recipientKeys = uniqueAddresses(recipients);
 
-  // Encrypt to the sender too, so the copy in Sent stays readable.
+  // Encrypt to the sender too, so the copy in Sent stays readable. The From
+  // address may be a sub-address or an override with no key of its own, so try
+  // the plain address and the identity's as well. Mailvelope also adds the
+  // user's default key unless that is switched off in its settings.
   const from = bareAddress(input.from.email);
-  const targets = envelopeRecipients.includes(from) || !(await hasOwnKey(input.keyring, from))
-    ? envelopeRecipients
-    : [...envelopeRecipients, from];
+  const own = recipientKeys.includes(from)
+    ? null
+    : await ownKeyAddress(input.keyring, [from, withoutSubAddress(from), ...(input.ownAddresses ?? []).map(bareAddress)]);
+  const targets = own && !recipientKeys.includes(own) ? [...recipientKeys, own] : recipientKeys;
 
   const armored = await input.editor.encrypt(targets);
 
@@ -66,6 +106,7 @@ export async function encryptAndBuildMessage(input: EncryptedMessageInput): Prom
     armored,
     inReplyTo: input.inReplyTo,
     references: input.references,
+    ...(input.requestReadReceipt ? { dispositionNotificationTo: input.from.email } : {}),
   });
   return { raw, envelopeRecipients };
 }
@@ -77,6 +118,7 @@ export async function encryptAndBuildMessage(input: EncryptedMessageInput): Prom
  */
 export const PGP_ERROR_MESSAGE_KEYS: Record<string, string> = {
   BULWARK_FRAME_BLOCKED: 'error_frame_blocked',
+  BULWARK_BCC_UNSUPPORTED: 'send_blocked_bcc',
   BULWARK_INVALID_ADDRESS: 'error_invalid_address',
   BULWARK_NON_ASCII_ADDRESS: 'error_non_ascii_address',
   NO_KEY_FOR_RECIPIENT: 'error_no_key_for_recipient',

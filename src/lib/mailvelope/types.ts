@@ -91,11 +91,6 @@ export interface MailvelopeEditorOptions {
   keepAttachments?: boolean;
 }
 
-export interface MailvelopeSettingsOptions {
-  email?: string;
-  fullName?: string;
-}
-
 export interface MailvelopeApi {
   getVersion(): Promise<string>;
   getKeyring(identifier: string): Promise<MailvelopeKeyring>;
@@ -111,12 +106,6 @@ export interface MailvelopeApi {
     keyring?: MailvelopeKeyring,
     options?: MailvelopeEditorOptions,
   ): Promise<MailvelopeEditor>;
-  /** Deprecated since Mailvelope 6.1.0 (use `keyring.openSettings()`); still present in 6.x. */
-  createSettingsContainer?(
-    selector: string,
-    keyring?: MailvelopeKeyring,
-    options?: MailvelopeSettingsOptions,
-  ): Promise<undefined>;
 }
 
 declare global {

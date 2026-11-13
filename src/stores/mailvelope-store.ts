@@ -18,6 +18,14 @@ interface MailvelopeStore {
 }
 
 let initPromise: Promise<void> | null = null;
+/** Bumped by every detection run; a run that is no longer the latest writes nothing. */
+let detectionRun = 0;
+/**
+ * True while a run waits for the extension to announce itself. Its own
+ * listener in whenMailvelopeReady picks up the `mailvelope` event, so the
+ * arrival handler must not start a second run beside it.
+ */
+let awaitingAnnouncement = false;
 let disconnectListenerAttached = false;
 let arrivalUnsubscribe: (() => void) | null = null;
 
@@ -34,14 +42,23 @@ export const useMailvelopeStore = create<MailvelopeStore>((set, get) => ({
       // `mailvelope-disconnect`, starts detection over instead of leaving the
       // page without PGP until it is reloaded.
       arrivalUnsubscribe = onMailvelopeArrival(() => {
-        if (get().status === 'ready') return;
+        if (get().status === 'ready' || awaitingAnnouncement) return;
         initPromise = null;
         void get().init();
       });
     }
     set({ status: 'detecting' });
+    const run = ++detectionRun;
+    const current = () => run === detectionRun;
     initPromise = (async () => {
-      const api = await whenMailvelopeReady();
+      awaitingAnnouncement = true;
+      let api: MailvelopeApi | null;
+      try {
+        api = await whenMailvelopeReady();
+      } finally {
+        if (current()) awaitingAnnouncement = false;
+      }
+      if (!current()) return;
       if (!api) {
         set({ status: 'unavailable' });
         return;
@@ -49,6 +66,7 @@ export const useMailvelopeStore = create<MailvelopeStore>((set, get) => ({
       try {
         const keyring = await getOrCreateKeyring(api);
         const version = await api.getVersion().catch(() => null);
+        if (!current()) return;
         set({ status: 'ready', api, keyring, version });
         if (!disconnectListenerAttached) {
           disconnectListenerAttached = true;
@@ -59,7 +77,7 @@ export const useMailvelopeStore = create<MailvelopeStore>((set, get) => ({
         // Present but unusable (origin not authorized for keyrings, extension
         // locked down, ...). Behave exactly as if it were absent.
         debug.log('email', 'Mailvelope detected but unusable:', err);
-        set({ status: 'unavailable' });
+        if (current()) set({ status: 'unavailable' });
       }
     })();
     return initPromise;
@@ -88,6 +106,8 @@ export function usePgpAvailable(): boolean {
 /** Forget cached detection so the next `init()` starts over. Tests only. */
 export function resetMailvelopeStoreForTests(): void {
   initPromise = null;
+  detectionRun++;
+  awaitingAnnouncement = false;
   disconnectListenerAttached = false;
   arrivalUnsubscribe?.();
   arrivalUnsubscribe = null;

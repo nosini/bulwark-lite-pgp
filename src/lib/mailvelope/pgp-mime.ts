@@ -28,6 +28,8 @@ export interface PgpMimeMessageOptions {
   messageId?: string;
   inReplyTo?: string[];
   references?: string[];
+  /** RFC 8098 read-receipt request: the address the receipt goes to. */
+  dispositionNotificationTo?: string;
   boundary?: string;
 }
 
@@ -327,6 +329,9 @@ export function buildPgpMimeMessage(opts: PgpMimeMessageOptions): BuiltPgpMimeMe
     fold('Message-ID', [messageId]),
     ...(inReplyTo.length > 0 ? [fold('In-Reply-To', inReplyTo)] : []),
     ...(references.length > 0 ? [fold('References', references)] : []),
+    ...(opts.dispositionNotificationTo
+      ? [fold('Disposition-Notification-To', mailboxTokens({ email: opts.dispositionNotificationTo }))]
+      : []),
     'MIME-Version: 1.0',
     `Content-Type: multipart/encrypted;${CRLF}\tprotocol="application/pgp-encrypted";${CRLF}\tboundary="${boundary}"`,
   ];

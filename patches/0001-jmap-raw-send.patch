@@ -1,12 +1,47 @@
+diff --git a/components/mail/__tests__/after-send-hook.test.tsx b/components/mail/__tests__/after-send-hook.test.tsx
+index e71b1006a..3b3d7b80b 100644
+--- a/components/mail/__tests__/after-send-hook.test.tsx
++++ b/components/mail/__tests__/after-send-hook.test.tsx
+@@ -163,7 +163,7 @@ describe('onAfterEmailSend', () => {
+     sendEmail.mockImplementation(async () => {
+       sendAt = new Date(Date.now() + 1500).toISOString();
+       useEmailStore.setState({
+-        pendingUndoSend: { submissionId: 's3', emailId: 'e3', identityId: 'id-1', sendAt, isSmime: false },
++        pendingUndoSend: { submissionId: 's3', emailId: 'e3', identityId: 'id-1', sendAt, onUndo: 'reopen' },
+       } as never);
+       return { scheduled: true, emailId: 'e3', emailSubmissionId: 's3', sendAt };
+     });
+diff --git a/components/mail/__tests__/undo-send-toast.test.tsx b/components/mail/__tests__/undo-send-toast.test.tsx
+index 17f92fa53..291e90040 100644
+--- a/components/mail/__tests__/undo-send-toast.test.tsx
++++ b/components/mail/__tests__/undo-send-toast.test.tsx
+@@ -98,7 +98,7 @@ function sendDelayedBy(inMs: number) {
+     useEmailStore.setState({
+       pendingUndoSend: {
+         submissionId: 'sub-1', emailId: 'email-1', identityId: 'id-1',
+-        sendAt: new Date(Date.now() + inMs).toISOString(), isSmime: false,
++        sendAt: new Date(Date.now() + inMs).toISOString(), onUndo: 'reopen',
+       },
+     } as never);
+   });
+@@ -145,7 +145,7 @@ describe('undo send toast', () => {
+         useEmailStore.setState({
+           pendingUndoSend: {
+             submissionId: 'sub-1', emailId: 'email-1', identityId: 'id-1', localAccountId: 'login-b',
+-            sendAt: new Date(Date.now() + 10_000).toISOString(), isSmime: false,
++            sendAt: new Date(Date.now() + 10_000).toISOString(), onUndo: 'reopen',
+           },
+         } as never);
+       });
 diff --git a/lib/__tests__/jmap-client-extensions.test.ts b/lib/__tests__/jmap-client-extensions.test.ts
-index d4bf0e0b6..561f50160 100644
+index d4bf0e0b6..cc78107dc 100644
 --- a/lib/__tests__/jmap-client-extensions.test.ts
 +++ b/lib/__tests__/jmap-client-extensions.test.ts
-@@ -82,6 +82,27 @@ describe('JMAP client extensions', () => {
+@@ -82,6 +82,46 @@ describe('JMAP client extensions', () => {
      vi.restoreAllMocks();
    });
  
-+  it.each([true, false])('raw send preserves REQUIRETLS=%s and Bcc envelope recipients', async (requireTls) => {
++  it.each([true, false])('raw send preserves REQUIRETLS=%s and every envelope recipient', async (requireTls) => {
 +    await setup();
 +    vi.spyOn(client, 'uploadBlob').mockResolvedValue({ blobId: 'ciphertext', type: 'message/rfc822', size: 10 });
 +    vi.spyOn(client, 'getIdentities').mockResolvedValue([{ id: 'identity', email: 'sender@example.com', name: 'Sender', mayDelete: false }]);
@@ -16,7 +51,7 @@ index d4bf0e0b6..561f50160 100644
 +    ] }));
 +
 +    await client.sendRawEmail(new Blob(['ciphertext']), 'identity', 'sent', 'drafts', undefined,
-+      ['visible@example.com', 'hidden@example.com'], { isPgp: true, requireTls });
++      ['visible@example.com', 'hidden@example.com'], { requireTls });
 +
 +    const submission = requests[0].methodCalls.find(([method]) => method === 'EmailSubmission/set')![1];
 +    expect(submission).toMatchObject({ create: { 'raw-submit': { envelope: {
@@ -24,6 +59,25 @@ index d4bf0e0b6..561f50160 100644
 +        ? { email: 'sender@example.com', parameters: { REQUIRETLS: null } }
 +        : { email: 'sender@example.com' },
 +      rcptTo: [{ email: 'visible@example.com' }, { email: 'hidden@example.com' }],
++    } } } });
++  });
++
++  it('raw send with a forced envelope asks for delivery notifications when requested', async () => {
++    await setup();
++    vi.spyOn(client, 'uploadBlob').mockResolvedValue({ blobId: 'ciphertext', type: 'message/rfc822', size: 10 });
++    vi.spyOn(client, 'getIdentities').mockResolvedValue([{ id: 'identity', email: 'sender@example.com', name: 'Sender', mayDelete: false }]);
++    answer(() => ({ methodResponses: [
++      ['Email/import', { created: { 'raw-import': { id: 'email' } } }, '0'],
++      ['EmailSubmission/set', { created: { 'raw-submit': { id: 'submission' } } }, '1'],
++    ] }));
++
++    await client.sendRawEmail(new Blob(['ciphertext']), 'identity', 'sent', 'drafts', undefined,
++      ['Bob.Smith@example.com'], { requestDsn: true });
++
++    const submission = requests[0].methodCalls.find(([method]) => method === 'EmailSubmission/set')![1];
++    expect(submission).toMatchObject({ create: { 'raw-submit': { envelope: {
++      mailFrom: { email: 'sender@example.com', parameters: { RET: 'HDRS' } },
++      rcptTo: [{ email: 'Bob.Smith@example.com', parameters: { NOTIFY: 'SUCCESS,FAILURE,DELAY' } }],
 +    } } } });
 +  });
 +
@@ -120,10 +174,10 @@ index 6d35dcdfa..f3b91ce95 100644
        })
        .filter((email): email is ScheduledEmail => email !== null)
 diff --git a/lib/jmap/types.ts b/lib/jmap/types.ts
-index 647a57309..53ef0d914 100644
+index 647a57309..2bdad8d1b 100644
 --- a/lib/jmap/types.ts
 +++ b/lib/jmap/types.ts
-@@ -109,6 +109,25 @@ export interface Email {
+@@ -109,6 +109,21 @@ export interface Email {
    scheduledAccountId?: string;
    isScheduled?: boolean;
    isSmimeScheduled?: boolean;
@@ -140,17 +194,83 @@ index 647a57309..53ef0d914 100644
 +export interface RawSendOptions {
 +  /** Require encrypted transport on every delivery hop. */
 +  requireTls?: boolean;
-+  /**
-+   * The raw message is PGP/MIME. Read by the store, not the client: undo-send
-+   * must not delete the only copy, because the plaintext lives solely inside
-+   * the Mailvelope editor and is gone once the composer closes.
-+   */
-+  isPgp?: boolean;
++  /** Ask for delivery status notifications (RFC 3461 NOTIFY / RET). */
++  requestDsn?: boolean;
  }
  
  export interface SendEmailResult {
+diff --git a/lib/offline/offline-mode.ts b/lib/offline/offline-mode.ts
+index 0152db852..8cd6e0aab 100644
+--- a/lib/offline/offline-mode.ts
++++ b/lib/offline/offline-mode.ts
+@@ -635,7 +635,7 @@ function offerUndo(entry: OutboxEntry, result: SendEmailResult): void {
+       emailId: result.emailId,
+       identityId,
+       sendAt: result.sendAt,
+-      isSmime: entry.item.kind === 'raw',
++      onUndo: entry.item.kind === 'raw' ? 'delete' : 'reopen',
+       submissionAccountId: result.submissionAccountId,
+       localAccountId: entry.account,
+     },
+diff --git a/stores/__tests__/email-store-submission-prune.test.ts b/stores/__tests__/email-store-submission-prune.test.ts
+index 55efa8b78..9cee45b5d 100644
+--- a/stores/__tests__/email-store-submission-prune.test.ts
++++ b/stores/__tests__/email-store-submission-prune.test.ts
+@@ -57,7 +57,7 @@ describe('pruning submission records from the store', () => {
+       emailId: 'sent-1',
+       identityId: 'identity-1',
+       sendAt: new Date(Date.now() + 10_000).toISOString(),
+-      isSmime: false,
++      onUndo: 'reopen',
+     });
+ 
+     expect(client.cancelEmailSubmission).toHaveBeenCalledWith('sub-1', undefined);
+diff --git a/stores/__tests__/email-store-undo-send.test.ts b/stores/__tests__/email-store-undo-send.test.ts
+index 2f51f5d51..1e6f0124c 100644
+--- a/stores/__tests__/email-store-undo-send.test.ts
++++ b/stores/__tests__/email-store-undo-send.test.ts
+@@ -18,7 +18,7 @@ const pending = {
+   emailId: 'sent-1',
+   identityId: 'identity-1',
+   sendAt: new Date(Date.now() + 10_000).toISOString(),
+-  isSmime: false,
++  onUndo: 'reopen' as const,
+ };
+ 
+ const scheduled = {
+@@ -84,7 +84,7 @@ describe('cancelling a send and restoring the draft', () => {
+   it('says the send was cancelled when only removing an S/MIME copy failed', async () => {
+     vi.mocked(client.deleteEmail).mockRejectedValueOnce(new Error('Request failed: 503'));
+ 
+-    const error = await useEmailStore.getState().cancelUndoSend(client, { ...pending, isSmime: true }).catch((e: unknown) => e);
++    const error = await useEmailStore.getState().cancelUndoSend(client, { ...pending, onUndo: 'delete' }).catch((e: unknown) => e);
+ 
+     expect(error).toBeInstanceOf(SendCancelledCleanupError);
+     expect((error as SendCancelledCleanupError).step).toBe('remove');
+@@ -191,7 +191,7 @@ describe.each(['1.0', '0.16'] as const)('undoing a send from a group identity on
+     emailId: 'eaaaaab',
+     identityId: 'b',
+     sendAt: new Date(Date.now() + 10_000).toISOString(),
+-    isSmime: false,
++    onUndo: 'reopen' as const,
+     submissionAccountId: 'c',
+   };
+ 
+diff --git a/stores/__tests__/email-store-undo-shared-submission.test.ts b/stores/__tests__/email-store-undo-shared-submission.test.ts
+index 7537222bf..5aa48c3f6 100644
+--- a/stores/__tests__/email-store-undo-shared-submission.test.ts
++++ b/stores/__tests__/email-store-undo-shared-submission.test.ts
+@@ -44,7 +44,7 @@ describe('undo and edit of a group-identity submission', () => {
+     useEmailStore.setState({ refreshScheduledMetadata: vi.fn().mockResolvedValue(undefined) });
+ 
+     await useEmailStore.getState().cancelUndoSend(client, {
+-      submissionId: 's1', emailId: 'e1', identityId: 'team-identity', submissionAccountId: GROUP,
++      submissionId: 's1', emailId: 'e1', identityId: 'team-identity', onUndo: 'reopen', submissionAccountId: GROUP,
+     } as never);
+ 
+     expect(client.cancelEmailSubmission).toHaveBeenCalledWith('s1', GROUP);
 diff --git a/stores/email-store.ts b/stores/email-store.ts
-index 97d75caca..9c45db754 100644
+index 97d75caca..7f4662efd 100644
 --- a/stores/email-store.ts
 +++ b/stores/email-store.ts
 @@ -3,7 +3,7 @@ import { IncompleteDeleteError } from "@/lib/jmap/delete-error";
@@ -162,41 +282,84 @@ index 97d75caca..9c45db754 100644
  import type { UnifiedMailboxRole, CrossView } from "@/lib/jmap/types";
  import type { IJMAPClient, SearchEmailsResult } from "@/lib/jmap/client-interface";
  import { jmapErrorFailedIds } from "@/lib/jmap/jmap-error";
-@@ -60,6 +60,9 @@ type PendingUndoSend = {
+@@ -54,12 +54,32 @@ type ScheduledSubmissionMetadata = {
+ 
+ const VIRTUAL_SCHEDULED_MAILBOX_ID = '__scheduled__';
+ 
++/**
++ * What undoing a delayed send does with the message:
++ * - `reopen`: back to Drafts and into the composer (a normal send).
++ * - `delete`: destroyed. A raw message (S/MIME from a plugin) cannot be edited
++ *   and its sender still has the plaintext, so nothing is lost.
++ * - `keep`: back to Drafts, but never into the composer. PGP/MIME: the
++ *   plaintext only ever existed inside the Mailvelope editor, which is gone, so
++ *   the ciphertext is the only copy; and the composer would open it as an empty
++ *   body that sends as plaintext.
++ */
++export type UndoSendAction = 'reopen' | 'delete' | 'keep';
++
++/** Store-level options of a raw send, on top of what the client takes. */
++export interface StoreRawSendOptions extends RawSendOptions {
++  /** PGP/MIME: undoing keeps the message instead of deleting it. */
++  isPgp?: boolean;
++  /** Connected account whose client sent it, when not the active one (#461). */
++  localAccountId?: string;
++}
++
+ type PendingUndoSend = {
+   submissionId: string;
+   emailId?: string;
    identityId?: string;
    sendAt: string;
-   isSmime: boolean;
-+  /** PGP/MIME send. Undoing must keep the message: the plaintext only ever
-+   *  existed inside the Mailvelope editor, which is unmounted by then. */
-+  isPgp?: boolean;
+-  isSmime: boolean;
++  onUndo: UndoSendAction;
    /** Local account that owns the submission, when the message was sent from
     *  an identity belonging to a non-active account (#461). */
    localAccountId?: string;
-@@ -457,7 +460,7 @@ interface EmailStore {
+@@ -457,7 +477,7 @@ interface EmailStore {
     * mode may keep in its outbox while the server can't be reached (#523).
     */
    sendEmail: (client: IJMAPClient, to: string[], subject: string, body: string, cc?: string[], bcc?: string[], identityId?: string, fromEmail?: string, draftId?: string, fromName?: string, htmlBody?: string, attachments?: Array<{ blobId: string; name: string; type: string; size: number; disposition?: 'attachment' | 'inline'; cid?: string }>, inReplyTo?: string[], references?: string[], delayedUntil?: string, envelopeMailFrom?: string, options?: { requestReadReceipt?: boolean; requestDsn?: boolean; requireTls?: boolean; priority?: MessagePriority; headers?: Record<string, string>; labelHeaders?: Record<string, string>; localAccountId?: string; draftAccountId?: string; outbox?: boolean }) => Promise<SendEmailResult>;
 -  sendRawEmail: (client: IJMAPClient, rawMimeBlob: Blob, identityId: string, delayedUntil?: string, envelopeRecipients?: string[], options?: { outbox?: boolean }) => Promise<SendEmailResult>;
-+  sendRawEmail: (client: IJMAPClient, rawMimeBlob: Blob, identityId: string, delayedUntil?: string, envelopeRecipients?: string[], options?: RawSendOptions & { outbox?: boolean }) => Promise<SendEmailResult>;
++  sendRawEmail: (client: IJMAPClient, rawMimeBlob: Blob, identityId: string, delayedUntil?: string, envelopeRecipients?: string[], options?: StoreRawSendOptions & { outbox?: boolean }) => Promise<SendEmailResult>;
    /** `emailKey` (emailKeyFor of the row) picks the right row when the id repeats across accounts. */
    deleteEmail: (client: IJMAPClient, emailId: string, forceDelete?: boolean, emailKey?: string) => Promise<boolean>;
    /** `emailKey` (emailKeyFor of the row) picks the right row when the id repeats across accounts. */
-@@ -4435,12 +4438,12 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
+@@ -4399,7 +4419,7 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
+               emailId: result.emailId,
+               identityId,
+               sendAt: result.sendAt,
+-              isSmime: false,
++              onUndo: 'reopen',
+               submissionAccountId: result.submissionAccountId,
+               // Cross-account send: undo/send-now must talk to the account that
+               // holds the submission, not the active one (#461).
+@@ -4435,12 +4455,22 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
        const sentMailbox = mailboxes.find(mb => mb.role === 'sent');
        if (!sentMailbox) throw new Error('No sent mailbox found');
        const draftsMailbox = mailboxes.find(mb => mb.role === 'drafts');
 -      const result = await client.sendRawEmail(rawMimeBlob, identityId, sentMailbox.id, draftsMailbox?.id, delayedUntil, envelopeRecipients);
-+      const result = await client.sendRawEmail(rawMimeBlob, identityId, sentMailbox.id, draftsMailbox?.id, delayedUntil, envelopeRecipients, options);
++      const { isPgp, localAccountId, ...clientOptions } = options ?? {};
++      const result = await client.sendRawEmail(rawMimeBlob, identityId, sentMailbox.id, draftsMailbox?.id, delayedUntil, envelopeRecipients, clientOptions);
        void client.pruneEmailSubmissions();
        set({
          isLoading: false,
          pendingUndoSend: result.scheduled && result.emailSubmissionId && result.sendAt
 -          ? { submissionId: result.emailSubmissionId, emailId: result.emailId, identityId, sendAt: result.sendAt, isSmime: true, submissionAccountId: result.submissionAccountId }
-+          ? { submissionId: result.emailSubmissionId, emailId: result.emailId, identityId, sendAt: result.sendAt, isSmime: true, isPgp: options?.isPgp, submissionAccountId: result.submissionAccountId }
++          ? {
++              submissionId: result.emailSubmissionId,
++              emailId: result.emailId,
++              identityId,
++              sendAt: result.sendAt,
++              onUndo: isPgp ? 'keep' : 'delete',
++              submissionAccountId: result.submissionAccountId,
++              // Undo and send-now must reach the account that holds the submission (#461).
++              ...(localAccountId ? { localAccountId } : {}),
++            }
            : get().pendingUndoSend,
        });
        return result;
-@@ -8251,6 +8254,9 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
+@@ -8251,6 +8281,9 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
      }
      await get().fetchScheduledEmails(client);
      if (email.isSmimeScheduled) return null;
@@ -206,28 +369,29 @@ index 97d75caca..9c45db754 100644
      // Back in Drafts either way; the caller opens it when it can.
      return client.getEmail(email.id, accountId).catch((error) => {
        console.error('Failed to load the restored draft:', error);
-@@ -8306,18 +8312,22 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
+@@ -8306,21 +8339,22 @@ export const useEmailStore = create<EmailStore>((set, get) => ({
      // failed undo, which would tell the user the mail may still leave.
      set({ pendingUndoSend: null });
      try {
 -      if (pending.emailId && pending.isSmime) {
-+      if (pending.emailId && pending.isSmime && !pending.isPgp) {
++      if (pending.emailId && pending.onUndo === 'delete') {
          await client.deleteEmail(pending.emailId, accountId);
          set(state => ({
            selectedEmail: state.selectedEmail?.id === pending.emailId ? null : state.selectedEmail,
            selectedEmailKeys: dropFromSelection(state, e => e.id === pending.emailId),
          }));
        } else if (pending.emailId) {
-+        // PGP/MIME lands here too. Its ciphertext is the only copy of the message
-+        // once the Mailvelope editor is unmounted, so undo keeps it in Drafts
-+        // rather than deleting it. The composer cannot reopen it, so unlike a
-+        // plain undo this returns null below and the message stays in Drafts.
++        // `reopen` and `keep` (PGP/MIME, see UndoSendAction): both go back to Drafts.
          await restoreSentToDraft(client, get().mailboxes, pending.emailId, accountId);
        }
      } catch (error) {
        void get().refreshScheduledMetadata(client);
 -      throw new SendCancelledCleanupError(pending.isSmime ? 'remove' : 'restore', error);
-+      throw new SendCancelledCleanupError(pending.isSmime && !pending.isPgp ? 'remove' : 'restore', error);
++      throw new SendCancelledCleanupError(pending.onUndo === 'delete' ? 'remove' : 'restore', error);
      }
      await get().refreshScheduledMetadata(client);
-     if (!pending.emailId || pending.isSmime) return null;
+-    if (!pending.emailId || pending.isSmime) return null;
++    if (!pending.emailId || pending.onUndo !== 'reopen') return null;
+     // Back in Drafts either way; the caller opens it when it can.
+     return client.getEmail(pending.emailId, accountId).catch((error) => {
+       console.error('Failed to load the restored draft:', error);

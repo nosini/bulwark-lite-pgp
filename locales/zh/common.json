@@ -2,6 +2,7 @@
   "email_composer": {
     "pgp_attachments_blocked": "Attach files inside the encrypted editor. Files added here would be uploaded unencrypted.",
     "close_pgp_message": "Encrypted messages are never saved to the server. Closing discards this message.",
+    "pgp_suspended_text_lost": "The encrypted message's text was discarded: it can't be kept when you leave the composer. The message reopens encrypted.",
     "pgp_no_identity": "Cannot send an encrypted message without a sender identity."
   },
   "settings": {
@@ -14,9 +15,7 @@
       "status_connected": "Mailvelope {version} is connected.",
       "status_connected_no_version": "Mailvelope is connected.",
       "keys_title": "Your keys",
-      "keys_description": "Generate, import and manage keys here. Messages are encrypted with your contacts' public keys and decrypted with your private key, both inside Mailvelope.",
-      "keys_loading": "Loading the key manager…",
-      "keys_embed_failed": "The embedded key manager could not be loaded.",
+      "keys_description": "Generate, import and manage keys in Mailvelope's settings, which open in a new tab. Messages are encrypted with your contacts' public keys and decrypted with your private key, both inside Mailvelope.",
       "open_settings": "Open Mailvelope key settings",
       "open_settings_failed": "Could not open the Mailvelope settings.",
       "limits_title": "What is and is not encrypted",
@@ -60,9 +59,13 @@
     "editor_failed": "Could not start the encrypted editor: {message}",
     "editor_failed_short": "The encrypted editor could not be started.",
     "editor_not_ready": "The encrypted editor is still loading.",
+    "editor_restarted": "Mailvelope restarted, so the encrypted editor started over empty. What you had typed in it is lost.",
     "send_blocked_missing": "No PGP key for: {addresses}",
     "send_blocked_failed": "Recipient keys could not be checked. Use Check again.",
-    "undo_kept_draft": "Sending was stopped. The encrypted message was kept in Drafts.",
+    "send_blocked_bcc": "Bcc can't be used with encrypted mail: every recipient could see the Bcc recipients' key IDs in the message. Send them a separate message.",
+    "send_blocked_uncommitted": "Press Enter to add {addresses} as a recipient, so its key can be checked.",
+    "undo_kept_draft": "Sending was stopped. The encrypted message was kept in Drafts, where it can be read but not edited.",
+    "draft_not_editable": "This encrypted message can't be edited. Open it to read it, and write a new message instead.",
     "error_generic": "Encryption failed.",
     "error_frame_blocked": "The encrypted editor is blocked by this site's security policy. Its Content-Security-Policy must allow chrome-extension: and moz-extension: in frame-src.",
     "error_invalid_address": "Cannot encrypt: {address} is not a valid email address.",
@@ -76,6 +79,7 @@
     "display_loading": "Decrypting with Mailvelope…",
     "display_failed": "This message could not be opened with Mailvelope.",
     "display_note": "Decrypted by Mailvelope. The signature status is shown inside the message frame.",
+    "display_other_text": "This message also contains text that is not encrypted. Use Show original to see it.",
     "display_show_original": "Show original"
   }
 }
