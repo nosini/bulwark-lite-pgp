@@ -34,10 +34,10 @@ index 17f92fa53..291e90040 100644
          } as never);
        });
 diff --git a/lib/__tests__/jmap-client-extensions.test.ts b/lib/__tests__/jmap-client-extensions.test.ts
-index d4bf0e0b6..cc78107dc 100644
+index d4bf0e0b6..3e03331d0 100644
 --- a/lib/__tests__/jmap-client-extensions.test.ts
 +++ b/lib/__tests__/jmap-client-extensions.test.ts
-@@ -82,6 +82,46 @@ describe('JMAP client extensions', () => {
+@@ -82,6 +82,68 @@ describe('JMAP client extensions', () => {
      vi.restoreAllMocks();
    });
  
@@ -79,6 +79,28 @@ index d4bf0e0b6..cc78107dc 100644
 +      mailFrom: { email: 'sender@example.com', parameters: { RET: 'HDRS' } },
 +      rcptTo: [{ email: 'Bob.Smith@example.com', parameters: { NOTIFY: 'SUCCESS,FAILURE,DELAY' } }],
 +    } } } });
++  });
++
++  it('raw send uses a matching From override as the envelope MAIL FROM', async () => {
++    await setup();
++    vi.spyOn(client, 'uploadBlob').mockResolvedValue({ blobId: 'ciphertext', type: 'message/rfc822', size: 10 });
++    vi.spyOn(client, 'getIdentities').mockResolvedValue([
++      { id: 'identity', email: 'sender@example.com', name: 'Sender', mayDelete: false },
++      { id: 'override', email: 'Override@Example.com', name: 'Override', mayDelete: false },
++    ]);
++    answer(() => ({ methodResponses: [
++      ['Email/import', { created: { 'raw-import': { id: 'email' } } }, '0'],
++      ['EmailSubmission/set', { created: { 'raw-submit': { id: 'submission' } } }, '1'],
++    ] }));
++
++    await client.sendRawEmail(new Blob(['ciphertext']), 'identity', 'sent', 'drafts', undefined,
++      ['bob@example.com'], { envelopeMailFrom: 'Name <override@example.com>' });
++
++    const submission = requests[0].methodCalls.find(([method]) => method === 'EmailSubmission/set')![1];
++    expect(submission).toMatchObject({ create: { 'raw-submit': {
++      identityId: 'override',
++      envelope: { mailFrom: { email: 'Override@Example.com' }, rcptTo: [{ email: 'bob@example.com' }] },
++    } } });
 +  });
 +
    describe('delta sync', () => {
@@ -127,7 +149,7 @@ index 377e61525..b5405da4c 100644
    getScheduledEmails(limit?: number, position?: number): Promise<{ emails: ScheduledEmail[]; hasMore: boolean; total: number; totalByAccount?: Record<string, number>; nextPosition: number }>;
    /** Cancels a pending submission, then destroys its record. */
 diff --git a/lib/jmap/client.ts b/lib/jmap/client.ts
-index 6d35dcdfa..f3b91ce95 100644
+index 6d35dcdfa..8ad0bf246 100644
 --- a/lib/jmap/client.ts
 +++ b/lib/jmap/client.ts
 @@ -4,7 +4,7 @@ import { IncompleteDeleteError } from "./delete-error";
@@ -155,17 +177,41 @@ index 6d35dcdfa..f3b91ce95 100644
    ): Promise<SendEmailResult> {
      const holdForSeconds = delayedUntil ? this.validateDelayedUntil(delayedUntil) : undefined;
      // Upload the raw message
-@@ -11753,7 +11755,8 @@ export class JMAPClient implements IJMAPClient {
+@@ -11753,7 +11755,23 @@ export class JMAPClient implements IJMAPClient {
      const importMailboxId = draftMailboxId || sentMailboxId;
      const identities = await this.beforeSubmission(() => this.getIdentities());
      const identity = identities.find(item => item.id === identityId);
 -    const envelope = createDelayedSubmissionEnvelope(identity?.email || this.username, holdForSeconds, envelopeRecipients);
++    // A From override is asked for as MAIL FROM too (#1009), but the server
++    // only accepts it when it names one of the account's identities. Then
++    // that identity submits, so the envelope sender is the override.
++    const requestedMailFrom = options?.envelopeMailFrom
++      ? parseRecipientString(options.envelopeMailFrom).email
++      : undefined;
++    const envelopeIdentity = requestedMailFrom
++      ? identities.find(item => item.email.toLowerCase() === requestedMailFrom.toLowerCase())
++      : undefined;
 +    // REQUIRETLS for a raw (PGP/MIME) send, like the regular send path.
-+    const envelope = createDelayedSubmissionEnvelope(identity?.email || this.username, holdForSeconds, envelopeRecipients, options);
++    const envelope = createDelayedSubmissionEnvelope(
++      envelopeIdentity?.email || identity?.email || this.username,
++      holdForSeconds,
++      envelopeRecipients,
++      options,
++    );
++    const submissionIdentityId = envelopeIdentity?.id || identityId;
      // These raw/S-MIME paths submit through the primary submission account, so
      // report that as the owning account rather than leaving it unset.
      const submissionAccountId = this.getSubmissionAccountId();
-@@ -12107,6 +12110,7 @@ export class JMAPClient implements IJMAPClient {
+@@ -11776,7 +11794,7 @@ export class JMAPClient implements IJMAPClient {
+         create: {
+           'raw-submit': {
+             emailId: submitEmailId,
+-            identityId,
++            identityId: submissionIdentityId,
+             ...(envelope ? { envelope } : {}),
+           },
+         },
+@@ -12107,6 +12125,7 @@ export class JMAPClient implements IJMAPClient {
            scheduledAccountId: accountBySubmission.get(submission),
            isScheduled: true,
            isSmimeScheduled: isSmimeEmail(email),
@@ -174,10 +220,10 @@ index 6d35dcdfa..f3b91ce95 100644
        })
        .filter((email): email is ScheduledEmail => email !== null)
 diff --git a/lib/jmap/types.ts b/lib/jmap/types.ts
-index 647a57309..2bdad8d1b 100644
+index 647a57309..34c0080fb 100644
 --- a/lib/jmap/types.ts
 +++ b/lib/jmap/types.ts
-@@ -109,6 +109,21 @@ export interface Email {
+@@ -109,6 +109,27 @@ export interface Email {
    scheduledAccountId?: string;
    isScheduled?: boolean;
    isSmimeScheduled?: boolean;
@@ -196,6 +242,12 @@ index 647a57309..2bdad8d1b 100644
 +  requireTls?: boolean;
 +  /** Ask for delivery status notifications (RFC 3461 NOTIFY / RET). */
 +  requestDsn?: boolean;
++  /**
++   * Address to use as the SMTP envelope MAIL FROM when it is one of the
++   * account's identities (the composer's From override), like sendEmail's
++   * `envelopeMailFrom` (#1009).
++   */
++  envelopeMailFrom?: string;
  }
  
  export interface SendEmailResult {

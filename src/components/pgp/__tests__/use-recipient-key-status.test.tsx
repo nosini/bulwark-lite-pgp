@@ -109,6 +109,46 @@ describe('useRecipientKeyStatus', () => {
     expect(result.current.failed).toEqual([]);
   });
 
+  it('forgets failed lookups when the keyring changes', async () => {
+    const oldKeyring = keyringWith(() => Promise.reject(new Error('extension went away')));
+    const newKeyring = keyringWith(noKeys);
+    const { result, rerender } = renderHook(
+      ({ keyring }) => useRecipientKeyStatus(true, keyring, ['carol@c.org']),
+      { initialProps: { keyring: oldKeyring } },
+    );
+    await settle();
+    expect(result.current.failed).toEqual(['carol@c.org']);
+
+    rerender({ keyring: newKeyring });
+    await settle();
+    expect(newKeyring.validKeyForAddress).toHaveBeenCalledWith(['carol@c.org']);
+    expect(result.current.failed).toEqual([]);
+    expect(result.current.statuses).toEqual([{ address: 'carol@c.org', state: 'missing', keys: [] }]);
+  });
+
+  it('discards an answer started with the previous keyring', async () => {
+    let release: (map: MailvelopeKeyMap) => void = () => {};
+    const oldKeyring = keyringWith(() => new Promise((resolve) => { release = resolve; }));
+    const newKeyring = keyringWith(noKeys);
+    const { result, rerender } = renderHook(
+      ({ keyring }) => useRecipientKeyStatus(true, keyring, ['carol@c.org']),
+      { initialProps: { keyring: oldKeyring } },
+    );
+    await settle();
+
+    rerender({ keyring: newKeyring });
+    await act(async () => {
+      release({
+        'carol@c.org': { keys: [{ fingerprint: 'f', lastModified: new Date(0), source: 'LOC' }] },
+      } as MailvelopeKeyMap);
+      await Promise.resolve();
+    });
+    await settle();
+
+    // The old keyring's "ready" answer must not replace the new one's "missing".
+    expect(result.current.statuses).toEqual([{ address: 'carol@c.org', state: 'missing', keys: [] }]);
+  });
+
   it('asks again after refresh even if an older answer was still in flight', async () => {
     let release: (map: MailvelopeKeyMap) => void = () => {};
     let calls = 0;

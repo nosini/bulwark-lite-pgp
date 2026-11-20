@@ -63,6 +63,8 @@
     "send_blocked_missing": "No PGP key for: {addresses}",
     "send_blocked_failed": "Recipient keys could not be checked. Use Check again.",
     "send_blocked_bcc": "Bcc can't be used with encrypted mail: every recipient could see the Bcc recipients' key IDs in the message. Send them a separate message.",
+    "send_blocked_identity_bcc": "This identity adds automatic Bcc recipients, which encrypted mail can't include. Switch identity or remove the automatic Bcc in settings.",
+    "enabling_encryption": "Turning on encryption…",
     "send_blocked_uncommitted": "Press Enter to add {addresses} as a recipient, so its key can be checked.",
     "undo_kept_draft": "Sending was stopped. The encrypted message was kept in Drafts, where it can be read but not edited.",
     "draft_not_editable": "This encrypted message can't be edited. Open it to read it, and write a new message instead.",

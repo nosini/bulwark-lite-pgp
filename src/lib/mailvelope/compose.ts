@@ -21,6 +21,10 @@ export interface EncryptedMessageInput {
    */
   ownAddresses?: string[];
   subject: string;
+  /** Extra top-level headers, such as a classification label's. */
+  headers?: Record<string, string>;
+  /** Classification label headers, as JMAP create properties (`header:Name:asRaw`). */
+  labelHeaders?: Record<string, string>;
   inReplyTo?: string[];
   references?: string[];
   /** Ask for a read receipt (RFC 8098 Disposition-Notification-To, to `from`). */
@@ -104,6 +108,8 @@ export async function encryptAndBuildMessage(input: EncryptedMessageInput): Prom
     cc: input.cc,
     subject: input.subject,
     armored,
+    headers: input.headers,
+    labelHeaders: input.labelHeaders,
     inReplyTo: input.inReplyTo,
     references: input.references,
     ...(input.requestReadReceipt ? { dispositionNotificationTo: input.from.email } : {}),

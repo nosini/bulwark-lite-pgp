@@ -30,6 +30,10 @@ export interface PgpMimeMessageOptions {
   references?: string[];
   /** RFC 8098 read-receipt request: the address the receipt goes to. */
   dispositionNotificationTo?: string;
+  /** Extra top-level headers, such as a plugin's or a classification label's. */
+  headers?: Record<string, string>;
+  /** Classification label headers, as JMAP create properties (`header:Name:asRaw`). */
+  labelHeaders?: Record<string, string>;
   boundary?: string;
 }
 
@@ -205,6 +209,69 @@ function fold(name: string, tokens: string[]): string {
   return lines.join(CRLF);
 }
 
+/**
+ * Headers that say what the message is and where it goes, or that record how
+ * it travelled; extras never replace them (the same set a normal send keeps
+ * plugins from writing, lib/outgoing/custom-headers.ts).
+ */
+const STRUCTURAL_HEADERS = new Set([
+  'from', 'sender', 'reply-to', 'to', 'cc', 'bcc', 'subject', 'date',
+  'message-id', 'in-reply-to', 'references', 'mime-version',
+  'return-path', 'received', 'received-spf', 'authentication-results',
+  'dkim-signature', 'domainkey-signature',
+  'disposition-notification-to', 'importance', 'x-priority', 'priority',
+]);
+const STRUCTURAL_PREFIXES = ['content-', 'resent-', 'arc-'];
+/** RFC 5322 §3.6.8 field-name: printable US-ASCII except the colon. */
+const HEADER_NAME_RE = /^[\x21-\x39\x3b-\x7e]{1,76}$/;
+const MAX_EXTRA_HEADERS = 20;
+
+function isStructuralHeader(name: string): boolean {
+  const lower = name.toLowerCase();
+  return STRUCTURAL_HEADERS.has(lower) || STRUCTURAL_PREFIXES.some((prefix) => lower.startsWith(prefix));
+}
+
+/**
+ * Extra top-level (unencrypted) headers, from plugins (`headers`) and the
+ * classification label (`labelHeaders`, as JMAP create properties). The label
+ * wins over a plugin header of the same name, as with a normal send. A value
+ * with a real line break is dropped: an asRaw label may legitimately carry its
+ * own continuation folds, which are unfolded first.
+ */
+function extraHeaderLines(
+  headers: Record<string, string> | undefined,
+  labelHeaders: Record<string, string> | undefined,
+): string[] {
+  const picked = new Map<string, { name: string; value: string }>();
+  const add = (name: string, raw: unknown): void => {
+    if (typeof raw !== 'string' || !HEADER_NAME_RE.test(name) || isStructuralHeader(name)) return;
+    const key = name.toLowerCase();
+    if (picked.has(key)) return;
+    const unfolded = raw.replace(/\r\n[ \t]+/g, ' ');
+    if (/[\r\n]/.test(unfolded)) return;
+    const value = unfolded.trim();
+    if (!value) return;
+    picked.set(key, { name, value });
+  };
+  for (const [property, value] of Object.entries(labelHeaders ?? {})) {
+    const match = /^header:([^:]+):as(?:Text|Raw)$/i.exec(property);
+    if (match) add(match[1], value);
+  }
+  for (const [name, value] of Object.entries(headers ?? {})) add(name, value);
+
+  const lines: string[] = [];
+  for (const { name, value } of picked.values()) {
+    if (lines.length >= MAX_EXTRA_HEADERS) break;
+    try {
+      lines.push(fold(name, encodeWords(value)));
+    } catch {
+      // Too long to fold under the RFC 5322 limit: leaving it out is better
+      // than refusing to send the message.
+    }
+  }
+  return lines;
+}
+
 const ADDR_SPEC_RE = /^[^\s<>",;:\\()[\]]+@[^\s<>",;:\\()[\]]+$/;
 
 /**
@@ -332,6 +399,7 @@ export function buildPgpMimeMessage(opts: PgpMimeMessageOptions): BuiltPgpMimeMe
     ...(opts.dispositionNotificationTo
       ? [fold('Disposition-Notification-To', mailboxTokens({ email: opts.dispositionNotificationTo }))]
       : []),
+    ...extraHeaderLines(opts.headers, opts.labelHeaders),
     'MIME-Version: 1.0',
     `Content-Type: multipart/encrypted;${CRLF}\tprotocol="application/pgp-encrypted";${CRLF}\tboundary="${boundary}"`,
   ];

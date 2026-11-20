@@ -38,6 +38,17 @@ export function useRecipientKeyStatus(
   const epochRef = useRef(0);
   // Bumped whenever the caches change, to re-render and re-run the effect.
   const [revision, setRevision] = useState(0);
+  // A new keyring (the extension restarted or keys changed) makes every
+  // answer, failure and lookup so far belong to a keyring that is gone.
+  const keyringRef = useRef(keyring);
+  if (keyringRef.current !== keyring) {
+    keyringRef.current = keyring;
+    epochRef.current++;
+    inFlightRef.current.clear();
+    cacheRef.current.clear();
+    failedRef.current.clear();
+    setRevision((r) => r + 1);
+  }
 
   const addresses = uniqueAddresses(recipients);
   const addressKey = addresses.join('\n');

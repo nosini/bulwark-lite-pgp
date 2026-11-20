@@ -33,6 +33,8 @@ export interface UsePgpComposeOptions {
    * recipients' key ids off the message.
    */
   hasBcc: boolean;
+  /** The identity adds Bcc recipients automatically (Identity.bcc). */
+  hasIdentityBcc?: boolean;
   /** Files already uploaded to the server in plain form. */
   hasAttachments: boolean;
   /** What has been typed so far, carried into the encrypted editor. */
@@ -61,6 +63,12 @@ export interface PgpSendParams {
   /** Addresses whose key would identify the sender, beyond `from`: the identity's own address. */
   ownAddresses?: string[];
   subject: string;
+  /** Extra top-level headers, such as a classification label's. */
+  headers?: Record<string, string>;
+  /** Classification label headers, as JMAP create properties (`header:Name:asRaw`). */
+  labelHeaders?: Record<string, string>;
+  /** The composer's From override, used as MAIL FROM when it names an identity. */
+  envelopeMailFrom?: string;
   inReplyTo?: string[];
   references?: string[];
   delayedUntil?: string;
@@ -88,6 +96,12 @@ export function usePgpCompose(options: UsePgpComposeOptions) {
   const { dialogProps, confirm } = useConfirmDialog();
 
   const [mode, setMode] = useState<PgpComposeMode>(options.initialMode ?? 'off');
+  /**
+   * Encryption is being switched on, but the composer still renders in off
+   * mode until the plaintext draft is deleted. Send must stay blocked in that
+   * window: `active` is false then, so Send would otherwise send plaintext.
+   */
+  const [enabling, setEnabling] = useState(false);
   const [initialText, setInitialText] = useState('');
   const [editorStatus, setEditorStatus] = useState<EditorStatus>('starting');
   const editorRef = useRef<MailvelopeEditor | null>(null);
@@ -127,18 +141,21 @@ export function usePgpCompose(options: UsePgpComposeOptions) {
       }
       const text = optionsRef.current.getPlainText();
       // Block every save first, then remove what is already on the server.
+      // `enabling` keeps Send blocked until the composer renders in encrypt mode.
+      setEnabling(true);
       activeRef.current = true;
       try {
         await opts.discardServerDraft();
+        setInitialText(text);
+        setEditorStatus('starting');
+        opts.onEncryptionStarted();
+        setMode('encrypt');
       } catch {
         activeRef.current = false;
         toast.error(t('enable_draft_failed'));
-        return;
+      } finally {
+        setEnabling(false);
       }
-      setInitialText(text);
-      setEditorStatus('starting');
-      opts.onEncryptionStarted();
-      setMode('encrypt');
       return;
     }
 
@@ -235,10 +252,12 @@ export function usePgpCompose(options: UsePgpComposeOptions) {
   // Why Send is unavailable right now, or null. Recipients without a key block
   // it rather than falling back to plaintext: that choice is the user's.
   let sendBlockedReason: string | null = null;
-  if (active) {
+  if (enabling) sendBlockedReason = t('enabling_encryption');
+  else if (active) {
     if (disconnected) sendBlockedReason = t('error_disconnected');
     else if (editorStatus === 'error') sendBlockedReason = t('editor_failed_short');
     else if (editorStatus !== 'ready') sendBlockedReason = t('editor_not_ready');
+    else if (options.hasIdentityBcc) sendBlockedReason = t('send_blocked_identity_bcc');
     else if (options.hasBcc) sendBlockedReason = t('send_blocked_bcc');
     else if (options.uncommittedRecipients.length > 0) {
       sendBlockedReason = t('send_blocked_uncommitted', { addresses: options.uncommittedRecipients.join(', ') });
@@ -269,6 +288,8 @@ export function usePgpCompose(options: UsePgpComposeOptions) {
           bcc: params.bcc,
           ownAddresses: params.ownAddresses,
           subject: params.subject,
+          headers: params.headers,
+          labelHeaders: params.labelHeaders,
           inReplyTo: params.inReplyTo,
           references: params.references,
           requestReadReceipt: params.requestReadReceipt,
@@ -280,6 +301,7 @@ export function usePgpCompose(options: UsePgpComposeOptions) {
             isPgp: true,
             ...(params.requireTls ? { requireTls: true } : {}),
             ...(params.requestDsn ? { requestDsn: true } : {}),
+            ...(params.envelopeMailFrom ? { envelopeMailFrom: params.envelopeMailFrom } : {}),
             ...(params.localAccountId ? { localAccountId: params.localAccountId } : {}),
           });
       } catch (err) {

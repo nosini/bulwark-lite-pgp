@@ -209,6 +209,55 @@ describe('buildPgpMimeMessage: headers', () => {
     expect(split(raw).head.split('\r\n').filter((l) => /^[A-Za-z-]+:/.test(l)).every((l) => !l.startsWith('Bcc'))).toBe(true);
   });
 
+  it('writes plugin and classification label headers as top-level headers', () => {
+    const { raw } = buildPgpMimeMessage({
+      ...base,
+      headers: { 'X-Review': 'keep this' },
+      labelHeaders: {
+        'header:SIO-Label:asRaw': ' marking="CONFIDENTIAL"; fgcolor=#000000; bgcolor=#d97706',
+        'header:Sensitivity:asText': 'Company-Confidential',
+      },
+    });
+    const head = unfold(split(raw).head);
+    expect(head).toContain('X-Review: keep this');
+    expect(head).toContain('SIO-Label: marking="CONFIDENTIAL"; fgcolor=#000000; bgcolor=#d97706');
+    expect(head).toContain('Sensitivity: Company-Confidential');
+    expect(head).not.toContain('header:SIO-Label');
+  });
+
+  it('never lets an extra header replace a structural one', () => {
+    const { raw } = buildPgpMimeMessage({
+      ...base,
+      headers: { From: 'eve@example.org', 'Content-Type': 'text/plain', 'X-Review': 'yes' },
+      labelHeaders: { 'header:Subject:asText': 'forged' },
+    });
+    const head = unfold(split(raw).head);
+    expect(head).toContain('From: Alice Example <alice@example.com>');
+    expect(head).toContain('Subject: Hello');
+    expect(head).toContain('X-Review: yes');
+    expect(head).not.toContain('eve@example.org');
+    expect(head).not.toContain('Subject: forged');
+    expect(head.match(/^Content-Type:/gm)).toHaveLength(1);
+  });
+
+  it('drops extra header values that would inject another header', () => {
+    const { raw } = buildPgpMimeMessage({
+      ...base,
+      headers: {
+        'X-Bad': 'ok\r\nBcc: evil@example.org',
+        'X-Folded': 'ok\r\n continued',
+        Bcc: 'evil@example.org',
+      },
+      labelHeaders: { 'header:X-Label:asText': 'fine\r\nX-Injected: yes' },
+    });
+    const head = unfold(split(raw).head);
+    expect(raw).not.toMatch(/^Bcc:/im);
+    expect(head).not.toContain('evil@example.org');
+    expect(head).not.toContain('X-Injected');
+    // A legitimate continuation fold is unfolded, not dropped.
+    expect(head).toContain('X-Folded: ok continued');
+  });
+
   it('rejects malformed and non-ASCII addresses instead of guessing', () => {
     expect(() => buildPgpMimeMessage({ ...base, to: [{ email: 'a@b.c\r\nBcc: x@y.z' }] })).toThrow(/Invalid email/);
     expect(() => buildPgpMimeMessage({ ...base, to: [{ email: 'not-an-address' }] })).toThrow(/Invalid email/);

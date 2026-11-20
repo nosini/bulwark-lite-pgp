@@ -1,5 +1,5 @@
 diff --git a/components/email/email-composer.tsx b/components/email/email-composer.tsx
-index 77163d04b..53937b2d5 100644
+index 77163d04b..d3c329fa3 100644
 --- a/components/email/email-composer.tsx
 +++ b/components/email/email-composer.tsx
 @@ -52,6 +52,11 @@ import { cn, formatFileSize, formatDateTime, generateUUID } from "@/lib/utils";
@@ -56,7 +56,7 @@ index 77163d04b..53937b2d5 100644
    onClose,
    requestCloseRef,
    onDiscardDraft,
-@@ -1205,6 +1230,55 @@ export function EmailComposer({
+@@ -1205,6 +1230,56 @@ export function EmailComposer({
        debug.warn('email', 'Failed to remove the replaced draft version:', err);
      }
    };
@@ -67,13 +67,14 @@ index 77163d04b..53937b2d5 100644
 +  const pgp = usePgpCompose({
 +    recipients: [...expandRecipients(to), ...expandRecipients(cc), ...expandRecipients(bcc)].map((r) => r.email),
 +    uncommittedRecipients: [toInput, ccInput, bccInput].map((text) => text.trim()).filter(Boolean),
-+    hasBcc: bcc.length > 0 || bccInput.trim() !== '',
++    hasBcc: bcc.length > 0 || bccInput.trim() !== '' || (currentIdentity?.bcc ?? []).length > 0,
++    hasIdentityBcc: (currentIdentity?.bcc ?? []).length > 0,
 +    get hasAttachments() {
 +      return attachments.length > 0 || pendingAttachmentUploadsRef.current > 0;
 +    },
 +    getPlainText: () => {
 +      const text = plainTextMode ? body : htmlToPlainText(body);
-+      return signatureAlreadyInBody
++      return signatureAlreadyInBody || !autoSignatureEnabled
 +        ? text
 +        : appendPlainTextSignature(text, signatureIdentity, { separator: signatureSeparatorEnabled });
 +    },
@@ -112,7 +113,7 @@ index 77163d04b..53937b2d5 100644
    // Login that owns the blobs uploaded through `composerClient`.
    const composerAccountId = currentIdentityParts.localAccountId ?? activeAccountId ?? undefined;
  
-@@ -1765,7 +1839,9 @@ export function EmailComposer({
+@@ -1765,7 +1840,9 @@ export function EmailComposer({
      bccStr !== initialValuesRef.current.bcc || subject !== initialValuesRef.current.subject ||
      // `!==`, not `>`: a re-opened draft starts with hydrated attachments, and
      // removing one must count as dirty or the removal never reaches the server.
@@ -123,7 +124,7 @@ index 77163d04b..53937b2d5 100644
    // A priority change alone is an edit worth saving (#970), and so is a label pick.
    const initialPriorityRef = useRef(priority);
    if (priority !== initialPriorityRef.current) isDirtyRef.current = true;
-@@ -1829,6 +1905,7 @@ export function EmailComposer({
+@@ -1829,6 +1906,7 @@ export function EmailComposer({
        if (explicitCloseRef.current) return;
        if (onSaveState && isDirtyRef.current) {
          const s = stateRef.current;
@@ -131,7 +132,7 @@ index 77163d04b..53937b2d5 100644
          onSaveState({
            ...s,
            draftAccountId: draftAccountIdRef.current,
-@@ -1839,7 +1916,12 @@ export function EmailComposer({
+@@ -1839,7 +1917,12 @@ export function EmailComposer({
            // Edits the last save didn't cover; a minimised composer with
            // none needs no save before an automatic sign-out.
            unsaved: changeVersionRef.current !== savedVersionRef.current || saveFailedRef.current,
@@ -144,7 +145,7 @@ index 77163d04b..53937b2d5 100644
        }
      };
    // eslint-disable-next-line react-hooks/exhaustive-deps
-@@ -1943,6 +2025,7 @@ export function EmailComposer({
+@@ -1943,6 +2026,7 @@ export function EmailComposer({
    // text - that is what plain text means - and does not come back on a
    // second switch.
    const togglePlainTextMode = useCallback(() => {
@@ -152,7 +153,7 @@ index 77163d04b..53937b2d5 100644
      const separator = signatureSeparatorEnabled;
      if (plainTextMode) {
        setBody((prev) => plainComposeBodyToHtml(prev, signatureIdentity, { separator }));
-@@ -2294,7 +2377,7 @@ export function EmailComposer({
+@@ -2294,7 +2378,7 @@ export function EmailComposer({
      return () => window.removeEventListener('keydown', handleTemplateKey);
    }, [templatesEnabled]);
  
@@ -161,7 +162,7 @@ index 77163d04b..53937b2d5 100644
      if (!client || files.length === 0) return;
  
      // Let plugins veto each upload before it's queued.
-@@ -2461,6 +2544,24 @@ export function EmailComposer({
+@@ -2461,6 +2545,24 @@ export function EmailComposer({
      }
    }, [client, t]);
  
@@ -186,7 +187,7 @@ index 77163d04b..53937b2d5 100644
    const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
      if (!event.target.files) return;
      await addFiles(Array.from(event.target.files));
-@@ -2528,6 +2629,13 @@ export function EmailComposer({
+@@ -2528,6 +2630,13 @@ export function EmailComposer({
    // `sourceAccountId` (host only, api.files.attach): the login whose Files
    // hold the blob, so a draft sent from another login copies it over first.
    const handlePluginAttachmentAdd = useCallback(async (raw: PluginAttachmentUpload, sourceAccountId?: string): Promise<boolean> => {
@@ -200,7 +201,7 @@ index 77163d04b..53937b2d5 100644
      // The values come from a plugin: check them, and run the same intercept
      // and size limit every other way of attaching a file goes through.
      const upload = normalizePluginAttachment(raw);
-@@ -2547,7 +2655,7 @@ export function EmailComposer({
+@@ -2547,7 +2656,7 @@ export function EmailComposer({
      }
      setAttachments(prev => [...prev, sourceAccountId ? { ...upload, sourceAccountId } : upload]);
      return true;
@@ -209,7 +210,7 @@ index 77163d04b..53937b2d5 100644
    // Stable props, so a re-render of the composer doesn't post them to the
    // plugin's iframe again.
    const pluginToolbarOffers = usePluginSlotOffers('composer-toolbar');
-@@ -2577,6 +2685,11 @@ export function EmailComposer({
+@@ -2577,6 +2686,11 @@ export function EmailComposer({
      const picker = filesPicker;
      setFilesPicker(null);
      if (!picker) return;
@@ -221,7 +222,7 @@ index 77163d04b..53937b2d5 100644
  
      let picked: FileNode[] = [];
      for (const node of nodes) {
-@@ -2612,7 +2725,7 @@ export function EmailComposer({
+@@ -2612,7 +2726,7 @@ export function EmailComposer({
          sourceAccountId: picker.accountId,
        })),
      ]);
@@ -230,7 +231,7 @@ index 77163d04b..53937b2d5 100644
  
    // Inline preview for composer attachments, reusing the message viewer's
    // FilePreviewModal (so previewability and the open-in-new-tab safety gate are
-@@ -2657,6 +2770,10 @@ export function EmailComposer({
+@@ -2657,6 +2771,10 @@ export function EmailComposer({
    // would be lost.
    const saveDraftOnce = async (auto = false): Promise<string | null> => {
      if (!client || !composerClient) return null;
@@ -241,7 +242,7 @@ index 77163d04b..53937b2d5 100644
      const versionAtStart = changeVersionRef.current;
  
      const toAddresses = expandRecipients(withInput(to, toInput)).map(r => formatRecipient(r.name, r.email));
-@@ -2927,7 +3044,7 @@ export function EmailComposer({
+@@ -2927,7 +3045,7 @@ export function EmailComposer({
  
    // The draft as plugins see it: onDraftChange, the frames above and below
    // the body, and clicks on plugin entries in the Send menu.
@@ -250,7 +251,7 @@ index 77163d04b..53937b2d5 100644
      to: withInput(to, toInput).map(r => formatRecipient(r.name, r.email)),
      cc: withInput(cc, ccInput).map(r => formatRecipient(r.name, r.email)),
      bcc: withInput(bcc, bccInput).map(r => formatRecipient(r.name, r.email)),
-@@ -2939,6 +3056,12 @@ export function EmailComposer({
+@@ -2939,6 +3057,12 @@ export function EmailComposer({
        .filter(a => a.blobId && !a.uploading && !a.error)
        .map(a => ({ name: a.name, type: a.type || 'application/octet-stream', size: a.size })),
    });
@@ -263,7 +264,7 @@ index 77163d04b..53937b2d5 100644
    const draftSnapshotRef = useRef(draftSnapshot);
    draftSnapshotRef.current = draftSnapshot;
  
-@@ -2966,6 +3089,7 @@ export function EmailComposer({
+@@ -2966,6 +3090,7 @@ export function EmailComposer({
    // rewrite of a selected paragraph is one call and Ctrl+Z takes it back in
    // the rich editor. Stable, so the slot iframes don't get new props.
    const pluginInsertText = useCallback((value: unknown) => {
@@ -271,7 +272,7 @@ index 77163d04b..53937b2d5 100644
      if (typeof value !== 'string' || value.length === 0 || value.length > MAX_PLUGIN_INSERT_LENGTH) return false;
      if (plainTextModeRef.current) {
        const textarea = bodyRef.current;
-@@ -2984,8 +3108,9 @@ export function EmailComposer({
+@@ -2984,8 +3109,9 @@ export function EmailComposer({
      const html = value.split(/\r?\n\r?\n/).map((para) => `<p>${escapeHtml(para).replace(/\r?\n/g, '<br>')}</p>`).join('');
      editor.chain().focus().insertContent(html).run();
      return true;
@@ -282,7 +283,7 @@ index 77163d04b..53937b2d5 100644
      if (plainTextModeRef.current) {
        const textarea = bodyRef.current;
        if (!textarea) return '';
-@@ -2995,7 +3120,7 @@ export function EmailComposer({
+@@ -2995,7 +3121,7 @@ export function EmailComposer({
      if (!editor) return '';
      const { from, to } = editor.state.selection;
      return editor.state.doc.textBetween(from, to, '\n\n');
@@ -291,7 +292,7 @@ index 77163d04b..53937b2d5 100644
    // Plugins read and change this message through api.composer, with the id
    // this composer hands out in its action clicks and slot props (see
    // composer-registry.ts). The rich editor is changed only through its own
-@@ -3041,7 +3166,7 @@ export function EmailComposer({
+@@ -3041,7 +3167,7 @@ export function EmailComposer({
    pluginDataRef.current = pluginData;
    useEffect(() => {
      const plainRange = (value: string) => plainOwnRange(value, pluginEditOptsRef.current);
@@ -300,7 +301,7 @@ index 77163d04b..53937b2d5 100644
        readMetadata: () => pluginDataRef.current.readMetadata(),
        readAttachment: (attachmentId) => pluginDataRef.current.readAttachment(attachmentId),
        readBody: () => {
-@@ -3088,10 +3213,10 @@ export function EmailComposer({
+@@ -3088,10 +3214,10 @@ export function EmailComposer({
        },
        attach: (file) => pluginAttachRef.current(file as PluginAttachmentUpload),
        attachFile: ({ sourceAccountId, ...file }) => pluginAttachRef.current(file as PluginAttachmentUpload, sourceAccountId),
@@ -313,7 +314,7 @@ index 77163d04b..53937b2d5 100644
  
    // The selected text of the message, for the plugin frames around it and
    // the panels beside it (an assistant works on what the user highlights).
-@@ -3256,7 +3381,7 @@ export function EmailComposer({
+@@ -3256,7 +3382,7 @@ export function EmailComposer({
        // tracked via inflightSaveRef.
        saveTimeoutRef.current = null;
        // Plugin observers (AI assist, grammar, …) get a debounced snapshot here.
@@ -322,7 +323,7 @@ index 77163d04b..53937b2d5 100644
        saveDraft({ auto: true });
      }, 2000);
  
-@@ -3281,15 +3406,17 @@ export function EmailComposer({
+@@ -3281,15 +3407,17 @@ export function EmailComposer({
    // actual member addresses.
    const toAddresses = expandRecipients(withInput(to, toInput));
    const bodyPlainText = plainTextMode ? body.trim() : htmlToPlainText(body).trim();
@@ -342,7 +343,7 @@ index 77163d04b..53937b2d5 100644
      if (!hasContent) return t('validation.body_required');
      return undefined;
    };
-@@ -3468,6 +3595,8 @@ export function EmailComposer({
+@@ -3468,6 +3596,8 @@ export function EmailComposer({
        if (!hasContent) errors.body = true;
        setValidationErrors(errors);
  
@@ -351,7 +352,7 @@ index 77163d04b..53937b2d5 100644
        if (errors.to) {
          setShakeField('to');
          setTimeout(() => setShakeField(null), 400);
-@@ -3540,7 +3669,7 @@ export function EmailComposer({
+@@ -3540,7 +3670,7 @@ export function EmailComposer({
      }
  
      // Attachment reminder check
@@ -360,17 +361,24 @@ index 77163d04b..53937b2d5 100644
        const hasAttachments = attachmentsRef.current.some(att => att.blobId && !att.uploading && !att.error);
        if (!hasAttachments) {
          // Scan only the user-authored text: the quoted original of a
-@@ -3773,7 +3902,8 @@ export function EmailComposer({
+@@ -3773,7 +3903,15 @@ export function EmailComposer({
          ),
          externalRecipients: await externalRecipientsFor({ ...outgoingContext, ...recipients }),
        });
 -      const sendCheck = await runPluginSendCheck(() => buildCheck(recipientsAtCheck));
-+      // Plugins never see a message Mailvelope is encrypting.
-+      const sendCheck = pgp.active ? 'allowed' : await runPluginSendCheck(() => buildCheck(recipientsAtCheck));
++      // A PGP message's body and attachments never leave the encrypted editor,
++      // so plugins get its metadata only. The send checks the admin requires
++      // still run and hold the message when they are down (runPluginSendCheck
++      // fails closed).
++      const metadataOnly = async (): Promise<OutgoingEmail> => {
++        const full = await buildCheck(recipientsAtCheck);
++        return { ...full, htmlBody: '', textBody: '', authoredText: '', attachments: [] };
++      };
++      const sendCheck = await runPluginSendCheck(() => (pgp.active ? metadataOnly() : buildCheck(recipientsAtCheck)));
        if (sendCheck !== 'allowed') {
          // A plugin vetoed the send (it is expected to show its own UI).
          // Leave a trace so a silent no-op send is diagnosable (#592).
-@@ -3823,14 +3953,17 @@ export function EmailComposer({
+@@ -3823,14 +3961,17 @@ export function EmailComposer({
            ...inlineAttachments.map(a => ({ name: a.name, type: a.type, size: a.size, blobId: a.blobId, cid: a.cid })),
          ],
        };
@@ -395,7 +403,7 @@ index 77163d04b..53937b2d5 100644
        if (pluginOutcome === 'aborted') {
          // The plugin shows its own error, or the user cancelled its prompt.
          debug.log('email', 'Send aborted by an onComposeSend plugin handler');
-@@ -3879,7 +4012,7 @@ export function EmailComposer({
+@@ -3879,7 +4020,7 @@ export function EmailComposer({
            attachments: uploadedAttachments.map(a => ({ name: a.name, type: a.type, size: a.size })),
            inReplyTo: threadingHeaders?.inReplyTo?.[0],
          };
@@ -404,7 +412,7 @@ index 77163d04b..53937b2d5 100644
          // A plugin that adds or changes recipients after the send checks
          // (an automatic Bcc) could take the message outside after an
          // "only outside the organisation" rule passed: check it again for
-@@ -3917,6 +4050,31 @@ export function EmailComposer({
+@@ -3917,6 +4058,34 @@ export function EmailComposer({
          const draftAccountAtSend = draftAccountIdRef.current;
          const draftElsewhere = !!finalDraftId && !!draftLogin && draftLogin !== loginFor(identityLocalAccountId);
  
@@ -423,6 +431,9 @@ index 77163d04b..53937b2d5 100644
 +            ownAddresses: currentIdentity?.email ? [currentIdentity.email] : undefined,
 +            // With the organisation's label, like a crypto plugin's takeover gets it.
 +            subject: labelled.subject,
++            headers: labelled.headers,
++            labelHeaders: labelled.labelHeaders,
++            envelopeMailFrom,
 +            inReplyTo: threadingHeaders?.inReplyTo,
 +            references: threadingHeaders?.references,
 +            delayedUntil: effectiveDelayedUntil,
@@ -436,7 +447,7 @@ index 77163d04b..53937b2d5 100644
          // The host closes the composer while onSend is still running. The
          // unmount auto-save must not hand it this message back as an unsent
          // draft ("Continue draft" flashed after every send). Reset below if
-@@ -3930,8 +4088,10 @@ export function EmailComposer({
+@@ -3930,8 +4099,10 @@ export function EmailComposer({
            cc: outgoing.cc,
            bcc: outgoing.bcc,
            subject: labelled.subject,
@@ -449,7 +460,7 @@ index 77163d04b..53937b2d5 100644
            draftId: finalDraftId && !draftElsewhere ? finalDraftId : undefined,
            draftAccountId: finalDraftId && !draftElsewhere ? draftAccountAtSend : undefined,
            fromEmail,
-@@ -3939,9 +4099,10 @@ export function EmailComposer({
+@@ -3939,9 +4110,10 @@ export function EmailComposer({
            identityId: rawId,
            envelopeMailFrom,
            localAccountId: identityLocalAccountId ?? undefined,
@@ -461,7 +472,7 @@ index 77163d04b..53937b2d5 100644
            requestReadReceipt,
            requestDsn: requestDsn || undefined,
            requireTls: requireTls || undefined,
-@@ -4801,6 +4962,7 @@ export function EmailComposer({
+@@ -4801,6 +4973,7 @@ export function EmailComposer({
          {wantsPluginDraft && (
            <PluginSlot name="composer-above-body" className="w-full" extraProps={pluginDraftProps} />
          )}
@@ -469,7 +480,7 @@ index 77163d04b..53937b2d5 100644
          {/* Body */}
          <ProofreadingNotice status={proofreading.status} />
          {proofreading.popup && !plainTextMode && pluginEditor && (() => {
-@@ -4819,7 +4981,9 @@ export function EmailComposer({
+@@ -4819,7 +4992,9 @@ export function EmailComposer({
              />
            ) : null;
          })()}
@@ -480,7 +491,7 @@ index 77163d04b..53937b2d5 100644
            <>
            <label htmlFor={`${fieldIdBase}-body`} className="sr-only">{t('body_label')}</label>
            <textarea
-@@ -4884,7 +5048,7 @@ export function EmailComposer({
+@@ -4884,7 +5059,7 @@ export function EmailComposer({
              drafts) - it would otherwise read as a second signature. Also when
              automatic insertion is off: nothing will be appended at send time,
              so a preview would promise a signature that never goes out. */}
@@ -489,7 +500,7 @@ index 77163d04b..53937b2d5 100644
            : plainTextMode ? (
            getPlainTextSignature(signatureIdentity) ? (
              <div className="px-4 pb-3 text-sm leading-6 text-muted-foreground break-words whitespace-pre-wrap font-mono">
-@@ -5068,7 +5232,19 @@ export function EmailComposer({
+@@ -5068,7 +5243,19 @@ export function EmailComposer({
                className="hidden"
                accept="*/*"
              />
@@ -510,7 +521,7 @@ index 77163d04b..53937b2d5 100644
                <ComposerToolbarMenu icon={Paperclip} label={t('attach')} testId="composer-attach-menu">
                  {(close) => <>
                    <ComposerToolbarMenuItem
-@@ -5133,6 +5309,13 @@ export function EmailComposer({
+@@ -5133,6 +5320,13 @@ export function EmailComposer({
                  </>}
                </ComposerToolbarMenu>
              )}
@@ -524,7 +535,7 @@ index 77163d04b..53937b2d5 100644
              {/* Sign/encrypt controls are contributed by crypto plugins via the
                  composer-toolbar slot (rendered below). */}
              <ComposerToolbarMenu
-@@ -5529,7 +5712,7 @@ export function EmailComposer({
+@@ -5529,7 +5723,7 @@ export function EmailComposer({
          role="alertdialog"
          showClose={false}
          title={closeDialogKind === 'discard' ? t('discard_draft_title') : t('close_draft_title')}
@@ -533,7 +544,7 @@ index 77163d04b..53937b2d5 100644
          footer={
            <>
              <Button variant="outline" onClick={() => dismissCloseDialog()}>
-@@ -5538,7 +5721,7 @@ export function EmailComposer({
+@@ -5538,7 +5732,7 @@ export function EmailComposer({
              <Button variant="destructive" onClick={handleDiscardAndClose}>
                {t('discard')}
              </Button>
@@ -542,7 +553,7 @@ index 77163d04b..53937b2d5 100644
                <Button onClick={handleSaveDraftAndClose}>
                  <Save className="w-4 h-4 me-2" />
                  {tCommon('save')}
-@@ -5548,6 +5731,8 @@ export function EmailComposer({
+@@ -5548,6 +5742,8 @@ export function EmailComposer({
          }
        />
  

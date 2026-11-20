@@ -80,6 +80,8 @@
     "display_failed": "This message could not be opened with Mailvelope.",
     "display_note": "Decrypted by Mailvelope. The signature status is shown inside the message frame.",
     "display_other_text": "This message also contains text that is not encrypted. Use Show original to see it.",
-    "display_show_original": "Show original"
+    "display_show_original": "Show original",
+    "send_blocked_identity_bcc": "This identity adds automatic Bcc recipients, which encrypted mail can't include. Switch identity or remove the automatic Bcc in settings.",
+    "enabling_encryption": "Turning on encryption…"
   }
 }

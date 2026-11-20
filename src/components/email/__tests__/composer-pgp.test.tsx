@@ -227,6 +227,7 @@ vi.mock('@/lib/plugin-hooks', () => ({
     onDraftChange: { emit: (...args: unknown[]) => hooks.onDraftChange(...args) },
     onBeforeDraftAutoSave: { size: 0, transform: async (draft: unknown) => draft },
     onBeforeEmailSend: {
+      size: 1,
       intercept: (...args: unknown[]) => hooks.onBeforeEmailSend(...args),
       interceptOutcome: async (...args: unknown[]) => ((await hooks.onBeforeEmailSend(...args)) ? 'allowed' : 'vetoed'),
     },
@@ -384,6 +385,28 @@ describe('turning PGP on', () => {
 
     await screen.findByTestId('composer-pgp-banner');
     expect(deleteEmail).toHaveBeenCalledWith('draft-1', undefined);
+  });
+
+  it('blocks Send while encryption is being switched on', async () => {
+    let release!: () => void;
+    deleteEmail.mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+    const onSend = vi.fn();
+    render(<EmailComposer initialData={{ ...DRAFT, draftId: 'draft-1' }} pgpSupported onSend={onSend} />);
+    fireEvent.click(pgpToggle());
+    fireEvent.click(await screen.findByText('enable_confirm'));
+    await waitFor(() => expect(deleteEmail).toHaveBeenCalledTimes(1));
+
+    // Still in the plaintext composer until the draft is gone, but Send must
+    // not fall back to sending plaintext in the meantime.
+    expect(screen.getByTestId('rich-text-editor')).toBeInTheDocument();
+    expect(sendButton()).toBeDisabled();
+    expect(sendButton()).toHaveAttribute('title', 'enabling_encryption');
+    fireEvent.click(sendButton());
+    await sleep(50);
+    expect(onSend).not.toHaveBeenCalled();
+
+    await React.act(async () => release());
+    await screen.findByTestId('composer-pgp-banner');
   });
 
   it('leaves everything alone, draft included, when the user declines', async () => {
@@ -570,6 +593,25 @@ describe('sending', () => {
     expect(sendButton()).toHaveAttribute('title', 'send_blocked_bcc');
   });
 
+  it('blocks Send when the identity adds an automatic Bcc, with its own reason', async () => {
+    useIdentityStore.setState({
+      identities: [{ id: 'id-me', email: 'me@example.com', name: 'Me', bcc: [{ email: 'hidden@example.net' }] }],
+    } as never);
+    try {
+      const onSend = vi.fn();
+      render(<EmailComposer initialData={DRAFT} pgpSupported onSend={onSend} />);
+      await enablePgp();
+      await sleep(800);
+      expect(sendButton()).toBeDisabled();
+      expect(sendButton()).toHaveAttribute('title', 'send_blocked_identity_bcc');
+      fireEvent.click(sendButton());
+      await sleep(50);
+      expect(onSend).not.toHaveBeenCalled();
+    } finally {
+      useIdentityStore.setState({ identities: [{ id: 'id-me', email: 'me@example.com', name: 'Me' }] } as never);
+    }
+  });
+
   it('blocks Send while a recipient has no key, and says which one', async () => {
     mv.hasKey = (address) => address !== 'bob@example.com';
     const onSend = vi.fn();
@@ -648,7 +690,7 @@ describe('additional review reproductions', () => {
     expect(mv.sendRawEmail.mock.calls[0][5]).toEqual({ isPgp: true, requireTls: true });
   });
 
-  it('keeps PGP subject and recipients out of plugin send hooks', async () => {
+  it('gives plugin send checks only metadata, never the encrypted body', async () => {
     hooks.onBeforeEmailSend.mockClear();
     const onSend = vi.fn();
     render(<EmailComposer initialData={{ ...DRAFT, subject: 'Confidential acquisition', cc: 'other@example.net', showCc: true }} pgpSupported onSend={onSend} />);
@@ -656,7 +698,29 @@ describe('additional review reproductions', () => {
     await waitFor(() => expect(sendButton()).not.toBeDisabled(), { timeout: 3000 });
     fireEvent.click(sendButton());
     await waitFor(() => expect(onSend).toHaveBeenCalled());
-    expect(hooks.onBeforeEmailSend).not.toHaveBeenCalled();
+
+    expect(hooks.onBeforeEmailSend).toHaveBeenCalledTimes(1);
+    expect(hooks.onBeforeEmailSend).toHaveBeenCalledWith(expect.objectContaining({
+      to: ['bob@example.com'],
+      cc: ['other@example.net'],
+      subject: 'Confidential acquisition',
+      htmlBody: '',
+      textBody: '',
+      authoredText: '',
+      attachments: [],
+    }));
+  });
+
+  it('still lets a plugin veto an encrypted send', async () => {
+    hooks.onBeforeEmailSend.mockResolvedValue(false);
+    const onSend = vi.fn();
+    render(<EmailComposer initialData={DRAFT} pgpSupported onSend={onSend} />);
+    await enablePgp();
+    await waitFor(() => expect(sendButton()).not.toBeDisabled(), { timeout: 3000 });
+    fireEvent.click(sendButton());
+    await waitFor(() => expect(hooks.onBeforeEmailSend).toHaveBeenCalled());
+    expect(onSend).not.toHaveBeenCalled();
+    expect(mv.encrypt).not.toHaveBeenCalled();
   });
 });
 
