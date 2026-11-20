@@ -59,6 +59,7 @@ Each patch covers one topic:
 | `0005-settings` | The PGP encryption settings tab |
 | `0006-csp` | Allowing Mailvelope's frames in the CSP, and the PGP section of the Lite README |
 | `0007-lite-release-urls` | Source and download links for builds published from this repository |
+| `0008-archive-fixture-expiry` | Upstream's archived-items test fixture expired on 2026-11-19, failing two tests. Moves its date to 2099. Drop this patch once upstream fixes the fixture. |
 
 To change them, edit a Git repository with one commit per patch:
 

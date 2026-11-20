@@ -1,0 +1,26 @@
+diff --git a/lib/recovery/__tests__/archived-items.test.ts b/lib/recovery/__tests__/archived-items.test.ts
+index b1f4e517f..c312f389b 100644
+--- a/lib/recovery/__tests__/archived-items.test.ts
++++ b/lib/recovery/__tests__/archived-items.test.ts
+@@ -50,7 +50,7 @@ describe('parseArchivedItems', () => {
+     expect(items).toEqual([
+       {
+         id: 'a', fromName: 'Org Bob', fromEmail: 'org-bob@example.org', subject: 'Message a',
+-        receivedAt: '2026-10-01T09:00:00Z', archivedAt: '2026-10-20T08:00:00Z', archivedUntil: '2026-11-19T08:00:00Z',
++        receivedAt: '2026-10-01T09:00:00Z', archivedAt: '2026-10-20T08:00:00Z', archivedUntil: '2099-01-01T08:00:00Z',
+         size: 2048, accountId: ACCOUNT,
+       },
+       expect.objectContaining({ id: 'b', fromName: '', fromEmail: 'carol@example.org', subject: '' }),
+diff --git a/lib/recovery/__tests__/fixtures.ts b/lib/recovery/__tests__/fixtures.ts
+index fa0f338ef..83fad80b8 100644
+--- a/lib/recovery/__tests__/fixtures.ts
++++ b/lib/recovery/__tests__/fixtures.ts
+@@ -46,7 +46,7 @@ export function archivedEmail(id: string, fields: Partial<Record<string, unknown
+     size: 2048,
+     accountId: ACCOUNT,
+     archivedAt: '2026-10-20T08:00:00Z',
+-    archivedUntil: '2026-11-19T08:00:00Z',
++    archivedUntil: '2099-01-01T08:00:00Z',
+     blobId: `blob-${id}`,
+     ...fields,
+   };
